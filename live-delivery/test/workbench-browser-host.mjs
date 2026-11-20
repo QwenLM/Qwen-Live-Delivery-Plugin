@@ -1,4 +1,4 @@
-import { WorkbenchHost } from '../.test-build/workbench-host.js';
+import { createCodexWorkbench } from '../.test-build/dashboard.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url))),
   temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cd-workbench-browser-'));
-const host = new WorkbenchHost(
+const host = createCodexWorkbench(
   {
     planMode: process.env.QWEN_LD_TEST_ROLLING === '1' ? 'rolling' : 'fixed',
     stateDir: path.join(temp, 'private'),

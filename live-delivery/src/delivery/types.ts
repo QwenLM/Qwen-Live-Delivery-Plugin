@@ -124,12 +124,12 @@ export type CdFeedback = {
 export type CdReleaseState = {
   /** State schema version. */
   stateVersion: 1;
-  harness?: 'claude-code' | 'codex';
+  harness?: string;
   lastActivityTs?: number;
   activityCount?: number;
   /** Brief public work update authored by the agent, not a completion claim. */
   activity?: { text: string; ts: number };
-  executionEvents?: import('./activity.js').ExecutionEvent[];
+  executionEvents?: import('./events.js').ExecutionEvent[];
   milestones?: CdMilestone[];
   planMode?: 'fixed' | 'rolling';
   planRevision?: number;

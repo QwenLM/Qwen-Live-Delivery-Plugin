@@ -14,11 +14,12 @@ import {
   takeFeedbackContext,
   changeSettings,
   requestWrapUp,
-  recordHook,
+  recordHostEvent,
 } from '../.test-build/controls.js';
 import { callTool } from '../.test-build/tools.js';
 import { buildReadModel } from '../.test-build/read-model.js';
 import { loadConfig } from '../.test-build/config.js';
+import { codexCli } from '../.test-build/cli.js';
 function setup(t) {
   const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cd-simple-'));
   t.after(() => fs.rmSync(workspaceDir, { recursive: true, force: true }));
@@ -155,7 +156,7 @@ test('retired environment options cannot enable approval gates or fixed plans fo
       QWEN_LD_MIN_WORKING: '1h',
       QWEN_LD_MIN_RELEASES: '50',
     });
-    const loaded = loadConfig(cfg.workspaceDir);
+    const loaded = loadConfig(codexCli, cfg.workspaceDir);
     assert.equal(loaded.requirePlanApproval, false);
     assert.equal(loaded.planMode, 'rolling');
     assert.equal(loaded.minWorkingSec, 0);
@@ -173,7 +174,7 @@ test('interruption batches new feedback and acknowledges it only in the resumed 
   const handoff = beginFeedbackHandoff(cfg, '00000000-0000-4000-8000-000000000001');
   assert.ok(handoff);
   assert.equal(takeFeedbackContext(cfg, 'PostToolUse'), '');
-  recordHook(cfg, { hook_event_name: 'Interrupt' });
+  recordHostEvent(cfg, { name: 'Interrupt', pauseReason: 'interrupt' });
   assert.equal(currentState(cfg).status, first.status);
   queueFeedback(cfg, first.id, { id: 'change-two', text: 'Include a stylus.' });
   assert.ok(prepareFeedbackResume(cfg, handoff.id));
@@ -199,7 +200,7 @@ test('user stop cancels automatic feedback resume without losing the message', (
   requestWrapUp(cfg, first.id);
   assert.equal(prepareFeedbackResume(cfg, handoff.id), false);
   assert.equal(takeFeedbackContext(cfg, 'UserPromptSubmit', Date.now(), handoff.id), '');
-  recordHook(cfg, { hook_event_name: 'Interrupt' });
+  recordHostEvent(cfg, { name: 'Interrupt', pauseReason: 'interrupt' });
   cancelFeedbackHandoff(cfg, handoff.id);
   const state = currentState(cfg);
   assert.equal(state.status, 'paused');

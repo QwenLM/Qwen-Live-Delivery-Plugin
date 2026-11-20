@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WorkbenchHost } from '../.test-build/workbench-host.js';
+import { createCodexWorkbench } from '../.test-build/dashboard.js';
 import { beginCd, publishVersion, markDone } from '../.test-build/core.js';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const pause = () => new Promise((r) => setTimeout(r, 70));
@@ -29,7 +29,7 @@ async function setup(t, env = {}) {
   };
   const hosts = [];
   const start = async () => {
-    const host = new WorkbenchHost(options, { PATH: process.env.PATH, ...env });
+    const host = createCodexWorkbench(options, { PATH: process.env.PATH, ...env });
     hosts.push(host);
     await new Promise((r) => host.server.listen(0, '127.0.0.1', r));
     return host;

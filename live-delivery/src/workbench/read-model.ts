@@ -1,8 +1,8 @@
 import type { CdConfig } from './config.js';
-import type { CdArtifact, CdReleaseState } from './types.js';
-import { listVersionFiles } from './state.js';
-import { numberedMilestones, planRevision } from './timeline.js';
-import { nextArtifactVersion } from './engine.js';
+import type { CdArtifact, CdReleaseState } from '../delivery/types.js';
+import { listVersionFiles } from '../delivery/state.js';
+import { numberedMilestones, planRevision } from '../delivery/timeline.js';
+import { nextArtifactVersion } from '../delivery/engine.js';
 import { previewSignature } from './access.js';
 
 export function rawUrl(cfg: CdConfig, id: string, version: number, file: string): string {

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WorkbenchHost } from '../.test-build/workbench-host.js';
+import { createCodexWorkbench } from '../.test-build/dashboard.js';
 import { createDeliveryServer } from '../.test-build/http.js';
 import { beginCd, publishVersion } from '../.test-build/core.js';
 
@@ -45,7 +45,7 @@ async function fixture(t) {
   };
   const hosts = [];
   const start = async () => {
-    const host = new WorkbenchHost(options, {});
+    const host = createCodexWorkbench(options, {});
     hosts.push(host);
     await new Promise((r) => host.server.listen(0, '127.0.0.1', r));
     return host;

@@ -18,7 +18,7 @@ var QWEN_LD_BUDGET = (() => {
   };
   var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-  // src/budget.ts
+  // src/delivery/budget.ts
   var budget_exports = {};
   __export(budget_exports, {
     requestedBudget: () => requestedBudget
