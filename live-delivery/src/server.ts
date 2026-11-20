@@ -33,9 +33,15 @@ async function initializeRuntime(): Promise<CdConfig> {
   initializing = (async () => {
     if (process.env.QWEN_LD_EMBEDDED_TASK === '1') http = createDeliveryServer(resolved);
     else {
-      const home = process.env.CODEX_HOME ?? path.join(homedir(), '.codex');
+      // The harness's own config directory holds the private workbench state
+      // and is never selectable as a workspace.
+      const home =
+        resolved.harness === 'claude-code'
+          ? (process.env.CLAUDE_CONFIG_DIR ?? path.join(homedir(), '.claude'))
+          : (process.env.CODEX_HOME ?? path.join(homedir(), '.codex'));
       const owner = createHash('sha256').update(resolved.instance).digest('hex').slice(0, 16);
       workbench = new WorkbenchHost({
+        harness: resolved.harness,
         stateDir:
           process.env.QWEN_LD_WORKBENCH_STATE ??
           path.join(home, 'live-delivery', 'workbenches', owner),

@@ -27,6 +27,8 @@ npm run verify
 | -------------------------------------------------- | ------------------------------------------------------------------------ |
 | `.agents/plugins/marketplace.json`                 | Repository marketplace index pointing to `live-delivery/`                |
 | `live-delivery/.codex-plugin/plugin.json`          | Codex plugin manifest                                                    |
+| `.claude-plugin/marketplace.json`                  | Claude Code marketplace pointing to `live-delivery/claude-code/`         |
+| `live-delivery/claude-code/`                       | Claude Code plugin root: manifest, `.mcp.json`, hooks, generated runtime |
 | `live-delivery/src/`                               | MCP server, hooks, state, publication, controls, and HTTP workbench host |
 | `live-delivery/ui/`                                | Browser interface and locally bundled assets                             |
 | `live-delivery/skills/`                            | Delivery via `$ld:go`; installation guidance via `$ld:install`           |
@@ -76,6 +78,22 @@ npm run test:codex
 
 Set `CODEX_BIN` to choose a CLI executable. Set `QWEN_LD_TEST_PACKAGE` to the unpacked `package/live-delivery/` directory to test that package rather than the development runtime. Tests do not modify your normal Codex settings or installed plugins. Live model evaluation is a separate, opt-in manual exercise; it consumes the operator's own quota.
 
+## Claude Code adapter
+
+`npm run build` builds both adapters from the same source; `node scripts/build.mjs codex` or `node scripts/build.mjs claude-code` builds one. The harness is fixed at build time through `QWEN_LD_HARNESS`. The Claude Code plugin root `live-delivery/claude-code/` contains three hand-written files (`.claude-plugin/plugin.json`, `.mcp.json`, `hooks/hooks.json`). The build generates the rest: `dist/server.mjs`, `dist/hook.mjs`, and copies of `skills/go/SKILL.md` and `LICENSE`. Commit the generated files with their source, as for the Codex `dist/`. The Codex release archive does not include `claude-code/`; Claude Code installs from the repository marketplace.
+
+`test/claude-code.test.mjs` and the `claude-code` case in `test/transport.test.mjs` cover the plugin layout, hook protocol, transcript usage and the CLI-only workbench offline. To check the plugin with a real Claude Code CLI without touching your own settings:
+
+```bash
+claude plugin validate ..
+export CLAUDE_CONFIG_DIR="$(mktemp -d)"
+claude plugin marketplace add ..
+claude plugin install ld@qwen-live-delivery
+(cd "$(mktemp -d)" && claude mcp list)   # plugin:ld:live-delivery should be connected
+```
+
+A live `/ld:go` session needs a signed-in Claude Code and uses the operator's own quota. Report the Claude Code version and model used.
+
 ## Browser checks
 
 Python 3 and Playwright are optional development dependencies:
@@ -95,7 +113,7 @@ A manual smoke test should also check a real task end to end: start directly, ch
 
 Release the skill, hooks, MCP server, and workbench as one tested package.
 
-1. Keep the version consistent in `package.json`, `package-lock.json`, `.codex-plugin/plugin.json`, `src/core.ts`, `src/server.ts`, and `src/native-rpc.ts`. Update archive examples in both languages.
+1. Keep the version consistent in `package.json`, `package-lock.json`, `.codex-plugin/plugin.json`, `claude-code/.claude-plugin/plugin.json`, `../.claude-plugin/marketplace.json`, `src/core.ts`, `src/server.ts`, and `src/native-rpc.ts`. Update archive examples in both languages.
 2. From a clean checkout, run `npm ci`, `npm run verify`, `npm run format:check`, and `npm audit`, then the [native Codex checks](#native-codex-compatibility). Require passing Linux and macOS checks; UI changes also need the [browser checks](#browser-checks). Record the tested Node.js and Codex versions.
 3. [Build and unpack the archive](#build-a-package-and-try-it), then test the unpacked package:
 

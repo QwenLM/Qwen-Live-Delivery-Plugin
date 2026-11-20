@@ -32,6 +32,8 @@
 
 安装沿用你的 Codex 模型、认证和审批设置，不附带模型或 API key。 网页新任务默认使用 `workspace-write` 沙箱；显式设置 `QWEN_LD_TASK_SANDBOX=danger-full-access` 会关闭其执行沙箱和逐条命令审批，可访问当前系统账号有权限访问的工作区外文件。安装器不会自动启用全权限。
 
+**Claude Code：** 运行 `claude plugin marketplace add QwenLM/Qwen-Live-Delivery-Plugin` 和 `claude plugin install ld@qwen-live-delivery` 安装，然后用 `/ld:go` 启动任务。详细说明和当前限制见 [Claude Code 指南](docs/claude-code.zh-CN.md)。本节其余内容适用于 Codex。
+
 ### 让 Agent 安装
 
 把仓库目录交给 Codex，直接说：
@@ -98,6 +100,7 @@ $ld:go 制作一个离线可用的单摆实验网页，可以调节摆长、暂�
 
 ## 文档
 
+- [Claude Code](docs/claude-code.zh-CN.md)
 - [贡献指南（英文）](CONTRIBUTING.md) · [开发与测试](docs/development.zh-CN.md)
 - [安全说明（英文）](SECURITY.md)
 

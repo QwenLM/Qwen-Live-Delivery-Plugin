@@ -1712,7 +1712,8 @@ async function main() {
   }
   if (event !== "UserPromptSubmit" && event !== "SessionStart") return;
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
-  const match = /^\s*\$ld:go(?:\s+([\s\S]*)|$)/.exec(prompt);
+  const command = cfg.harness === "claude-code" ? /^\s*\/ld:go(?:\s+([\s\S]*)|$)/ : /^\s*\$ld:go(?:\s+([\s\S]*)|$)/;
+  const match = command.exec(prompt);
   if (match?.[1]?.trim()) {
     const started = startTask(cfg, match[1].trim());
     let ready = loadConfigForHook(input);

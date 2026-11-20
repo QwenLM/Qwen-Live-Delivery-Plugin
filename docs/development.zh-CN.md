@@ -18,18 +18,20 @@ npm run verify
 
 ## 源码结构
 
-| 路径                                               | 内容                                               |
-| -------------------------------------------------- | -------------------------------------------------- |
-| `.agents/plugins/marketplace.json`                 | 仓库安装索引，指向 `live-delivery/`                |
-| `live-delivery/.codex-plugin/plugin.json`          | Codex 插件清单                                     |
-| `live-delivery/src/`                               | MCP 服务、hook、状态、发布、控制与 HTTP 工作台宿主 |
-| `live-delivery/ui/`                                | 网页界面与随包提供的本地资源                       |
-| `live-delivery/skills/`                            | `$ld:go` 的交付指令和 `$ld:install` 的安装指引     |
-| `live-delivery/src/prompts/tool-descriptions.json` | MCP 工具描述的源文件                               |
-| `live-delivery/test/`                              | 协议、快照、生命周期、原生 Codex 与浏览器检查      |
-| `live-delivery/scripts/`                           | 构建、发布检查、打包和依赖声明生成                 |
-| `live-delivery/dist/`                              | 构建生成的独立运行文件                             |
-| `docs/`                                            | 公开文档、配图和演示素材                           |
+| 路径                                               | 内容                                                              |
+| -------------------------------------------------- | ----------------------------------------------------------------- |
+| `.agents/plugins/marketplace.json`                 | 仓库安装索引，指向 `live-delivery/`                               |
+| `live-delivery/.codex-plugin/plugin.json`          | Codex 插件清单                                                    |
+| `.claude-plugin/marketplace.json`                  | Claude Code 插件市场，指向 `live-delivery/claude-code/`           |
+| `live-delivery/claude-code/`                       | Claude Code 插件根目录：清单、`.mcp.json`、hooks 和生成的运行文件 |
+| `live-delivery/src/`                               | MCP 服务、hook、状态、发布、控制与 HTTP 工作台宿主                |
+| `live-delivery/ui/`                                | 网页界面与随包提供的本地资源                                      |
+| `live-delivery/skills/`                            | `$ld:go` 的交付指令和 `$ld:install` 的安装指引                    |
+| `live-delivery/src/prompts/tool-descriptions.json` | MCP 工具描述的源文件                                              |
+| `live-delivery/test/`                              | 协议、快照、生命周期、原生 Codex 与浏览器检查                     |
+| `live-delivery/scripts/`                           | 构建、发布检查、打包和依赖声明生成                                |
+| `live-delivery/dist/`                              | 构建生成的独立运行文件                                            |
+| `docs/`                                            | 公开文档、配图和演示素材                                          |
 
 安装索引和插件清单是安装所需元数据，不是缓存。`.github/`、README 和治理文件保留在仓库根目录；构建与依赖配置放在 `live-delivery/`。
 
@@ -68,6 +70,22 @@ npm run test:codex
 
 通过 `CODEX_BIN` 指定 CLI 可执行文件，通过 `QWEN_LD_TEST_PACKAGE` 指定解压后的 `package/live-delivery/` 目录，以验证该包而非开发运行文件。测试不会修改日常 Codex 配置或已安装插件。真实模型评估需要另行手动发起，会消耗操作者自己的额度。
 
+## Claude Code 适配
+
+`npm run build` 从同一份源码构建两个适配；`node scripts/build.mjs codex` 或 `node scripts/build.mjs claude-code` 只构建其中一个。Harness 在构建时通过 `QWEN_LD_HARNESS` 固定。Claude Code 插件根目录 `live-delivery/claude-code/` 中有三个手写文件（`.claude-plugin/plugin.json`、`.mcp.json`、`hooks/hooks.json`），其余由构建生成：`dist/server.mjs`、`dist/hook.mjs`，以及复制的 `skills/go/SKILL.md` 和 `LICENSE`。与 Codex 的 `dist/` 一样，生成文件需与源码一起提交。Codex 发行包不包含 `claude-code/`；Claude Code 通过仓库插件市场安装。
+
+`test/claude-code.test.mjs` 和 `test/transport.test.mjs` 中的 `claude-code` 用例离线覆盖插件结构、hook 协议、对话记录用量统计，以及仅支持命令行任务的工作台。如需在不影响日常设置的情况下用真实 Claude Code CLI 检查插件：
+
+```bash
+claude plugin validate ..
+export CLAUDE_CONFIG_DIR="$(mktemp -d)"
+claude plugin marketplace add ..
+claude plugin install ld@qwen-live-delivery
+(cd "$(mktemp -d)" && claude mcp list)   # 应显示 plugin:ld:live-delivery 已连接
+```
+
+真实的 `/ld:go` 会话需要已登录的 Claude Code，并消耗操作者自己的额度。请记录 Claude Code 版本和所用模型。
+
 ## 浏览器检查
 
 Python 3 和 Playwright 是可选开发依赖：
@@ -87,7 +105,7 @@ python3 -m venv .venv
 
 将 skill、hooks、MCP 服务和工作台作为同一个包验证和发布。
 
-1. 同步 `package.json`、`package-lock.json`、`.codex-plugin/plugin.json`、`src/core.ts`、`src/server.ts` 和 `src/native-rpc.ts` 中的版本号，并更新双语文档中的压缩包示例。
+1. 同步 `package.json`、`package-lock.json`、`.codex-plugin/plugin.json`、`claude-code/.claude-plugin/plugin.json`、`../.claude-plugin/marketplace.json`、`src/core.ts`、`src/server.ts` 和 `src/native-rpc.ts` 中的版本号，并更新双语文档中的压缩包示例。
 2. 在干净的代码检出中运行 `npm ci`、`npm run verify`、`npm run format:check` 和 `npm audit`，再运行[原生 Codex 检查](#原生-codex-兼容性)。Linux 和 macOS 检查均应通过；UI 变更还需运行[浏览器检查](#浏览器检查)。记录实际测试的 Node.js 和 Codex 版本。
 3. 按[打包试用](#打包试用)生成并解压运行包，再验证解压后的包：
 

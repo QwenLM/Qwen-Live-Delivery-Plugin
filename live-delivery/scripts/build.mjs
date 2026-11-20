@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
   copyFileSync,
+  mkdirSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -13,8 +14,14 @@ import { dependencyNotices } from './licenses.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 copyFileSync(path.join(root, '../LICENSE'), path.join(root, 'LICENSE'));
-if (process.argv.slice(2).some((value) => value !== 'codex'))
-  throw new Error('This package builds the Codex adapter only.');
+// No argument builds every adapter. Codex output stays at the package root;
+// the Claude Code plugin root is live-delivery/claude-code/.
+const HARNESSES = ['codex', 'claude-code'];
+const requested = process.argv.slice(2);
+for (const value of requested)
+  if (!HARNESSES.includes(value))
+    throw new Error(`Unknown adapter "${value}". Expected: ${HARNESSES.join(', ')}.`);
+const targets = requested.length ? HARNESSES.filter((h) => requested.includes(h)) : HARNESSES;
 const descriptions = JSON.parse(
   readFileSync(path.join(root, 'src/prompts/tool-descriptions.json'), 'utf8'),
 );
@@ -61,29 +68,48 @@ writeFileSync(
     ';\n',
 );
 
-const options = {
+const baseOptions = {
   bundle: true,
   platform: 'node',
   format: 'esm',
   target: 'node22',
-  define: { QWEN_LD_HARNESS: JSON.stringify('codex') },
   legalComments: 'eof',
 };
+const optionsFor = (harness) => ({
+  ...baseOptions,
+  define: { QWEN_LD_HARNESS: JSON.stringify(harness) },
+});
+const options = optionsFor('codex');
 const bundledPackages = new Set();
-for (const entry of ['server', 'hook', 'viewer', 'workbench', 'setup']) {
-  const result = await build({
-    ...options,
-    metafile: true,
-    absWorkingDir: root,
-    entryPoints: [path.join(root, 'src', `${entry}.ts`)],
-    outfile: path.join(root, 'dist', `${entry}.mjs`),
-    banner: {
-      js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
-    },
-  });
-  const notices = dependencyNotices(root, Object.keys(result.metafile.inputs));
-  appendFileSync(path.join(root, 'dist', `${entry}.mjs`), notices.comment);
-  for (const id of notices.packages) bundledPackages.add(id);
+async function bundle(harness, pluginRoot, entries) {
+  for (const entry of entries) {
+    const outfile = path.join(pluginRoot, 'dist', `${entry}.mjs`);
+    const result = await build({
+      ...optionsFor(harness),
+      metafile: true,
+      absWorkingDir: root,
+      entryPoints: [path.join(root, 'src', `${entry}.ts`)],
+      outfile,
+      banner: {
+        js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
+      },
+    });
+    const notices = dependencyNotices(root, Object.keys(result.metafile.inputs));
+    appendFileSync(outfile, notices.comment);
+    for (const id of notices.packages) bundledPackages.add(id);
+  }
+}
+if (targets.includes('codex'))
+  await bundle('codex', root, ['server', 'hook', 'viewer', 'workbench', 'setup']);
+if (targets.includes('claude-code')) {
+  // Claude Code CLI sessions need only the MCP server and the hook entry.
+  // The plugin manifest, .mcp.json and hooks.json under claude-code/ are
+  // source files; the skill and LICENSE are copied so both adapters share them.
+  const claudeRoot = path.join(root, 'claude-code');
+  await bundle('claude-code', claudeRoot, ['server', 'hook']);
+  mkdirSync(path.join(claudeRoot, 'skills/go'), { recursive: true });
+  copyFileSync(path.join(root, 'skills/go/SKILL.md'), path.join(claudeRoot, 'skills/go/SKILL.md'));
+  copyFileSync(path.join(root, 'LICENSE'), path.join(claudeRoot, 'LICENSE'));
 }
 console.log(`Embedded license notices for ${bundledPackages.size} bundled dependencies.`);
 rmSync(path.join(root, '.test-build'), { recursive: true, force: true });
@@ -122,4 +148,6 @@ await build({
   ].map((name) => path.join(root, 'src', `${name}.ts`)),
   outdir: path.join(root, '.test-build'),
 });
-console.log('Built self-contained Codex MCP server and hooks; no sibling repository required.');
+console.log(
+  `Built self-contained MCP server and hooks for: ${targets.join(', ')}; no sibling repository required.`,
+);
