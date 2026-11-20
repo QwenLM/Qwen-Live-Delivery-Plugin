@@ -91,7 +91,12 @@ async function main(): Promise<void> {
   }
   if (event !== 'UserPromptSubmit' && event !== 'SessionStart') return;
   const prompt = typeof input.prompt === 'string' ? input.prompt : '';
-  const match = /^\s*\$ld:go(?:\s+([\s\S]*)|$)/.exec(prompt);
+  // Codex invokes plugin skills as `$ld:go`; Claude Code as the `/ld:go` command.
+  const command =
+    cfg.harness === 'claude-code'
+      ? /^\s*\/ld:go(?:\s+([\s\S]*)|$)/
+      : /^\s*\$ld:go(?:\s+([\s\S]*)|$)/;
+  const match = command.exec(prompt);
   if (match?.[1]?.trim()) {
     const started = startTask(cfg, match[1].trim());
     // The SessionStart binding lets MCP start HTTP while this hook is running.

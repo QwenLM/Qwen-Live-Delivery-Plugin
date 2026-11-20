@@ -17,7 +17,7 @@ import {
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { parse, stringify } from 'smol-toml';
-import { atomicJson, DEFAULT_BASE_PATH, type CdConfig } from './config.js';
+import { atomicJson, DEFAULT_BASE_PATH, type CdConfig, type Harness } from './config.js';
 import { createDeliveryServer } from './http.js';
 import { buildReadModel } from './read-model.js';
 import { readRequestBody } from './request-body.js';
@@ -43,6 +43,8 @@ import {
 
 import { loadRegistry, type Registry, type Run, type Workspace } from './registry.js';
 export type WorkbenchOptions = {
+  /** Browser-created tasks are Codex-only; other harnesses host CLI sessions only. */
+  harness?: Harness;
   stateDir: string;
   workspaceRoot: string;
   pluginRoot: string;
@@ -99,6 +101,7 @@ export class WorkbenchHost {
       pluginRoot: realpathSync(input.pluginRoot),
       codexHome: path.resolve(input.codexHome ?? env.CODEX_HOME ?? path.join(homedir(), '.codex')),
       codexBin: input.codexBin ?? 'codex',
+      harness: input.harness ?? 'codex',
       sandbox: input.sandbox ?? 'workspace-write',
       maxParallel: input.maxParallel ?? 2,
       planMode: 'rolling',
@@ -106,11 +109,13 @@ export class WorkbenchHost {
     if (inside(this.options.workspaceRoot, this.options.stateDir))
       throw new Error('Keep the private runtime directory outside the selectable workspace root.');
     this.sourceEnv = { ...env };
-    try {
-      this.sourceConfig = parse(
-        readFileSync(path.join(this.options.codexHome, 'config.toml'), 'utf8'),
-      ) as Record<string, unknown>;
-    } catch {}
+    const launches = this.options.harness === 'codex';
+    if (launches)
+      try {
+        this.sourceConfig = parse(
+          readFileSync(path.join(this.options.codexHome, 'config.toml'), 'utf8'),
+        ) as Record<string, unknown>;
+      } catch {}
     const secrets = new Set<string>();
     const collect = (obj: unknown) => {
       if (!obj || typeof obj !== 'object') return;
@@ -128,24 +133,29 @@ export class WorkbenchHost {
       }
     };
     collect(this.sourceConfig);
-    try {
-      collect(JSON.parse(readFileSync(path.join(this.options.codexHome, 'auth.json'), 'utf8')));
-    } catch {}
+    if (launches)
+      try {
+        collect(JSON.parse(readFileSync(path.join(this.options.codexHome, 'auth.json'), 'utf8')));
+      } catch {}
     for (const [key, value] of Object.entries(env))
       if (value && value.length > 16 && /token|secret|api.?key|password/i.test(key))
         secrets.add(value);
     this.secrets = [...secrets].sort((a, b) => b.length - a.length);
     for (const run of this.registry.runs) if (run.status === 'attached') run.status = 'imported';
-    const signature = hash(
-      readFileSync(path.join(this.options.pluginRoot, 'dist/server.mjs'), 'utf8') +
-        readFileSync(path.join(this.options.pluginRoot, 'skills/go/SKILL.md'), 'utf8') +
-        JSON.stringify(providerEnvNames(this.sourceConfig)),
-    ).slice(0, 16);
-    this.runtimePlugin = path.join(this.options.stateDir, 'plugins', signature);
-    if (!existsSync(path.join(this.runtimePlugin, '.ready'))) {
-      stagePlugin(this.options.pluginRoot, this.runtimePlugin);
-      configureProviderEnv(this.runtimePlugin, providerEnvNames(this.sourceConfig));
-      writeFileSync(path.join(this.runtimePlugin, '.ready'), 'ready');
+    // Only hosts that launch native children stage a private plugin copy for them.
+    this.runtimePlugin = '';
+    if (launches) {
+      const signature = hash(
+        readFileSync(path.join(this.options.pluginRoot, 'dist/server.mjs'), 'utf8') +
+          readFileSync(path.join(this.options.pluginRoot, 'skills/go/SKILL.md'), 'utf8') +
+          JSON.stringify(providerEnvNames(this.sourceConfig)),
+      ).slice(0, 16);
+      this.runtimePlugin = path.join(this.options.stateDir, 'plugins', signature);
+      if (!existsSync(path.join(this.runtimePlugin, '.ready'))) {
+        stagePlugin(this.options.pluginRoot, this.runtimePlugin);
+        configureProviderEnv(this.runtimePlugin, providerEnvNames(this.sourceConfig));
+        writeFileSync(path.join(this.runtimePlugin, '.ready'), 'ready');
+      }
     }
     for (const dir of input.importWorkspaces ?? []) this.registerWorkspace(dir, true);
     for (const item of readdirSync(this.options.workspaceRoot, { withFileTypes: true }))
@@ -386,14 +396,15 @@ export class WorkbenchHost {
             createdTs: root.createdTs,
           };
         }),
-      canCreateTask: true,
+      harness: this.options.harness,
+      canCreateTask: this.options.harness === 'codex',
     };
   }
   private cfg(run: Run): CdConfig {
     const workspace = this.workspace(run.workspaceId),
       state = run.sessionId ? readState(workspace.path, run.sessionId) : null;
     return {
-      harness: 'codex',
+      harness: this.options.harness,
       planMode: state?.planMode ?? this.options.planMode,
       workspaceDir: workspace.path,
       instance: 'web-' + run.id,
@@ -632,6 +643,10 @@ export class WorkbenchHost {
           return;
         }
         if (route === DEFAULT_BASE_PATH + '/api/tasks') {
+          if (this.options.harness !== 'codex')
+            throw new Error(
+              'Browser-created tasks are not supported for Claude Code yet. Start the task in Claude Code with /ld:go.',
+            );
           const parsed = z
             .object({
               id: z.string().regex(/^[A-Za-z0-9-]{8,100}$/),
@@ -757,7 +772,7 @@ export class WorkbenchHost {
       return;
     }
     const cfg: CdConfig = {
-      harness: 'codex',
+      harness: this.options.harness,
       workspaceDir: this.options.workspaceRoot,
       instance: 'workbench-shell',
       sessionKey: 'workbench-shell',

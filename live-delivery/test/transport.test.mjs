@@ -71,8 +71,9 @@ test(
     assert.doesNotMatch(logs, /Unhandled|Error:/);
   },
 );
-for (const harness of ['codex']) {
-  const server = path.join(root, 'dist/server.mjs');
+for (const harness of ['codex', 'claude-code']) {
+  const pluginRoot = harness === 'codex' ? root : path.join(root, 'claude-code');
+  const server = path.join(pluginRoot, 'dist/server.mjs');
   if (!existsSync(server)) continue;
   test(
     `${harness}: real stdio MCP, snapshot HTTP/ZIP, stop and empty-publish behavior`,
@@ -200,7 +201,7 @@ for (const harness of ['codex']) {
       assert.equal(requested.stopRequest.reason, 'user');
       assert.equal(requested.stopRequest.confirmedTs, undefined);
       const { spawnSync } = await import('node:child_process');
-      const stopped = spawnSync(process.execPath, [path.join(root, 'dist/hook.mjs')], {
+      const stopped = spawnSync(process.execPath, [path.join(pluginRoot, 'dist/hook.mjs')], {
         env: {
           ...process.env,
           QWEN_LD_WORKSPACE: ws,

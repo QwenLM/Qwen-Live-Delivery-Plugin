@@ -41,6 +41,19 @@ export const runtimeFiles = new Set([
   'docs/development.zh-CN.md',
 ]);
 
+// The Claude Code plugin installs from the repository marketplace
+// (.claude-plugin/marketplace.json), not from the Codex release archive.
+export const claudeCodeFiles = new Set([
+  '.claude-plugin/marketplace.json',
+  'live-delivery/claude-code/.claude-plugin/plugin.json',
+  'live-delivery/claude-code/.mcp.json',
+  'live-delivery/claude-code/hooks/hooks.json',
+  'live-delivery/claude-code/skills/go/SKILL.md',
+  'live-delivery/claude-code/dist/server.mjs',
+  'live-delivery/claude-code/dist/hook.mjs',
+  'live-delivery/claude-code/LICENSE',
+]);
+
 export function npm(args) {
   const result = spawnSync('npm', args, { cwd: pluginRoot, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || `npm ${args[0]} failed`);
@@ -148,6 +161,27 @@ export function checkRelease() {
       `Version missing from ${file}`,
     );
   }
+  for (const file of claudeCodeFiles)
+    assert.ok(lstatSync(path.join(root, file)).isFile(), `Missing Claude Code file: ${file}`);
+  const claudeManifest = json('claude-code/.claude-plugin/plugin.json');
+  assert.equal(claudeManifest.name, manifest.name);
+  assert.equal(claudeManifest.version, pkg.version);
+  assert.equal(claudeManifest.license, pkg.license);
+  const claudeMarketplace = json('../.claude-plugin/marketplace.json');
+  assert.equal(claudeMarketplace.plugins[0].name, manifest.name);
+  assert.equal(claudeMarketplace.plugins[0].source, './live-delivery/claude-code');
+  assert.equal(claudeMarketplace.plugins[0].version, pkg.version);
+  assert.equal(readFileSync(path.join(pluginRoot, 'claude-code/LICENSE'), 'utf8'), license);
+  for (const file of [...claudeCodeFiles].filter((name) => name.includes('/dist/')))
+    assert.ok(
+      readFileSync(path.join(root, file), 'utf8').includes(
+        'Copyright (c) 2026 Qwen Live Delivery Plugin contributors',
+      ),
+      `Missing copyright and bundled license comments: ${file}`,
+    );
+  const claudeMcp = json('claude-code/.mcp.json').mcpServers['live-delivery'];
+  assert.deepEqual(claudeMcp.args, ['${CLAUDE_PLUGIN_ROOT}/dist/server.mjs']);
+  assert.ok(!claudeMcp.env, 'Do not embed environment values in the release manifest');
   const mcp = json('.mcp.json').mcpServers['live-delivery'];
   assert.equal(mcp.command, 'node');
   assert.deepEqual(mcp.args, ['dist/server.mjs']);

@@ -300,7 +300,7 @@ export function createDeliveryServer(
           409,
           JSON.stringify({
             ok: false,
-            error: 'Read-only viewer; launch the task from Codex to execute.',
+            error: `Read-only viewer; launch the task from ${cfg.harness === 'claude-code' ? 'Claude Code' : 'Codex'} to execute.`,
           }),
           'application/json',
         );

@@ -1,0 +1,19 @@
+{
+  "name": "qwen-live-delivery",
+  "owner": {
+    "name": "Qwen Live Delivery Plugin contributors"
+  },
+  "metadata": {
+    "description": "Qwen Live Delivery Plugin for Claude Code: ship a usable first version, then keep publishing versioned snapshots you steer from a local browser workbench."
+  },
+  "plugins": [
+    {
+      "name": "ld",
+      "source": "./live-delivery/claude-code",
+      "description": "Live delivery for Claude Code: usable version snapshots, rolling milestones, and a local preview workbench.",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "category": "productivity"
+    }
+  ]
+}

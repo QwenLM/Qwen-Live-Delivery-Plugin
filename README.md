@@ -32,6 +32,8 @@ Start once, get a usable first version, and improve it one version at a time. Ad
 
 Installation uses your Codex model, authentication, and approval settings; no model or API key is included. Browser tasks default to the `workspace-write` sandbox. Explicitly setting `QWEN_LD_TASK_SANDBOX=danger-full-access` disables their sandbox and per-command approval, allowing access outside the workspace with your OS account permissions. The installer never enables full access automatically.
 
+**Claude Code:** install with `claude plugin marketplace add QwenLM/Qwen-Live-Delivery-Plugin` and `claude plugin install ld@qwen-live-delivery`, then start tasks with `/ld:go`. See the [Claude Code guide](docs/claude-code.md) for details and current limitations. The rest of this section covers Codex.
+
 ### For agents
 
 Give Codex the repository directory and ask:
@@ -98,6 +100,7 @@ Plugin **0.1.0**, tested with Codex **0.166.0 / 0.167.1**.
 
 ## Documentation
 
+- [Claude Code](docs/claude-code.md)
 - [Contributing](CONTRIBUTING.md) · [Development and tests](docs/development.md)
 - [Security](SECURITY.md)
 
