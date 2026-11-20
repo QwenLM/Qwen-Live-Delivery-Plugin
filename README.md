@@ -28,6 +28,8 @@ This demo follows an AI agent as it builds ORBIT, a personal trading research we
 
 Start once, get a usable first version, and improve it one version at a time. Add requirements or change direction anytime. Delivered versions remain available when you stop the task or the budget runs out.
 
+In rolling delivery, conflicting results for the same acceptance criterion block publication. Report the final result after rechecking. A rejected attempt does not use a version number.
+
 ## Install
 
 Installation uses your Codex model, authentication, and approval settings; no model or API key is included. Browser tasks default to the `workspace-write` sandbox. Explicitly setting `QWEN_LD_TASK_SANDBOX=danger-full-access` disables their sandbox and per-command approval, allowing access outside the workspace with your OS account permissions. The installer never enables full access automatically.

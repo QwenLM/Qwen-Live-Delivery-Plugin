@@ -175,6 +175,31 @@ test('a rough candidate cannot be published as usable without passing each accep
   assert.equal(currentState(cfg).publishes.length, 0);
   assert.equal(publish(cfg, 'first', 1, epoch + 1000).state.published.version, 1);
 });
+test('conflicting results for one acceptance criterion do not consume a version', (t) => {
+  const cfg = setup(t);
+  const { state } = beginCd(cfg, 'Build', { milestones: [milestone('first')] }, epoch);
+  fs.writeFileSync(path.join(cfg.workspaceDir, 'index.html'), '<h1>Counter</h1>');
+  const input = { paths: ['index.html'], preview_entry: 'index.html', milestone_id: 'first' };
+  const passed = { label: 'Opens', result: 'passed' };
+  for (const checks of [
+    [{ label: 'Opens', result: 'failed' }, passed],
+    [passed, { label: 'Opens', result: 'not_run' }],
+  ]) {
+    const result = publishVersion(cfg, { ...input, checks }, epoch + 1);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /Conflicting results.*"Opens"/);
+    assert.equal(result.version_consumed, false);
+    assert.equal(currentState(cfg).published, undefined);
+    assert.equal(currentState(cfg).publishes.length, 0);
+    assert.equal(
+      fs.existsSync(path.join(cfg.workspaceDir, '.live-delivery', state.id, 'versions/v1')),
+      false,
+    );
+  }
+  const corrected = publishVersion(cfg, { ...input, checks: [passed] }, epoch + 2);
+  assert.equal(corrected.ok, true, corrected.error);
+  assert.equal(corrected.state.published.version, 1);
+});
 test('task duration recognition does not confuse video length or per-version intervals with total time', () => {
   for (const [text, seconds] of [
     ['总时间3分钟', 180],

@@ -383,14 +383,19 @@ export function publishVersion(cfg: CdConfig, input: PublishInput, now = Date.no
           );
         const milestone = state.milestones?.find((m) => m.id === input.milestone_id);
         if (!milestone) throw new Error('Rolling deliveries require a planned milestone_id.');
-        if (
-          milestone.acceptance.some(
-            (label) => !input.checks?.some((c) => c.label === label && c.result === 'passed'),
-          )
-        )
-          throw new Error(
-            'Check each acceptance criterion before publication; include its exact label and a passed result. A deadline is not permission to publish an unusable candidate.',
+        for (const label of milestone.acceptance) {
+          const results = new Set(
+            input.checks?.filter((check) => check.label === label).map((check) => check.result),
           );
+          if (results.size > 1)
+            throw new Error(
+              `Conflicting results for acceptance criterion ${JSON.stringify(label)}. Report only its final result before publishing.`,
+            );
+          if (!results.has('passed'))
+            throw new Error(
+              'Check each acceptance criterion before publication; include its exact label and a passed result. A deadline is not permission to publish an unusable candidate.',
+            );
+        }
       }
       for (const id of input.feedback_ids ?? [])
         if (!state.feedback?.some((f) => f.id === id && f.status !== 'queued'))
