@@ -10,12 +10,12 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import { currentState, ownedStates } from './core.js';
+import { currentState, ownedStates } from '../delivery/core.js';
 import { escapeHtml, renderMarkdown } from './markdown.js';
-import { listVersionFiles, readState, resolveInsideDir, versionDir } from './state.js';
-import { UI_ASSETS } from './ui-assets.generated.js';
+import { listVersionFiles, readState, resolveInsideDir, versionDir } from '../delivery/state.js';
+import { UI_ASSETS } from '../ui-assets.generated.js';
 import { buildReadModel } from './read-model.js';
-import { queueFeedback, changeSettings, requestWrapUp } from './controls.js';
+import { queueFeedback, changeSettings, requestWrapUp } from '../delivery/controls.js';
 import { readRequestBody } from './request-body.js';
 import { archiveName, buildStoredZip, type ZipEntry } from './zip.js';
 import type { CdConfig } from './config.js';
@@ -209,16 +209,17 @@ function serveVersionZip(cfg: CdConfig, res: ServerResponse, id: string, version
  * Build the HTTP server for a config. Call .listen() separately.
  */
 export function createDeliveryServer(
-  cfg: CdConfig,
+  initial: CdConfig,
   options: {
     csrfToken?: string;
     stateExtras?: (model: ReturnType<typeof buildReadModel>) => Record<string, unknown>;
     access?: WorkbenchAccess;
+    resolveConfig?: () => CdConfig;
   } = {},
 ): Server {
-  const base = cfg.basePath;
+  const base = initial.basePath;
   const access = options.access ?? new WorkbenchAccess(base);
-  cfg.accessToken = access.token;
+  initial.accessToken = access.token;
   const csrfToken = options.csrfToken ?? randomBytes(32).toString('hex');
   return createServer((req, res) => {
     void handle(req, res).catch(() => {
@@ -249,6 +250,7 @@ export function createDeliveryServer(
       return;
     }
     if (!(await access.check(req, res, requestOrigin))) return;
+    const cfg = options.resolveConfig ? options.resolveConfig() : initial;
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${cfg.port}`);
     let route = url.pathname;
     if (route === base) route = `${base}/`;

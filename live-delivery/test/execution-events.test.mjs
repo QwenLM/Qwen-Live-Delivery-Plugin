@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { executionEvent, readExecutionTrace } from '../.test-build/activity.js';
+import { codexExecutionEvent as executionEvent, readExecutionTrace } from '../.test-build/trace.js';
+import { hookExecutionEvent } from '../.test-build/hook-activity.js';
 import { beginCd, currentState } from '../.test-build/core.js';
-import { recordHook } from '../.test-build/controls.js';
+import { recordHostEvent } from '../.test-build/controls.js';
 test('execution summaries expose tool metadata and workspace paths, not arguments, output or reasoning', () => {
   const cwd = '/workspace/project';
   const event = executionEvent(
@@ -97,9 +98,9 @@ test('CLI PostToolUse records public metadata and keeps only recent events', (t)
     minReleases: 1,
   };
   beginCd(cfg, 'Build');
-  for (let i = 0; i < 85; i++)
-    recordHook(
-      cfg,
+  for (let i = 0; i < 85; i++) {
+    const now = 1000 + i;
+    const execution = hookExecutionEvent(
       {
         hook_event_name: 'PostToolUse',
         tool_name: 'read_file',
@@ -107,8 +108,11 @@ test('CLI PostToolUse records public metadata and keeps only recent events', (t)
         tool_input: { file_path: 'src/main.ts', secret: 'PRIVATE' },
         tool_response: 'PRIVATE_OUTPUT',
       },
-      1000 + i,
+      cfg.workspaceDir,
+      now,
     );
+    recordHostEvent(cfg, { name: 'PostToolUse', execution }, now);
+  }
   const events = currentState(cfg).executionEvents;
   assert.equal(events.length, 80);
   assert.deepEqual(events.at(-1).files, ['src/main.ts']);

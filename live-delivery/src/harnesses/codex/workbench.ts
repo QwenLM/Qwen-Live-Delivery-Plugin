@@ -3,9 +3,9 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { homedir } from 'node:os';
-import { WorkbenchHost } from './workbench-host.js';
-import { deliveryLinks } from './browser.js';
-import { DEFAULT_BASE_PATH } from './config.js';
+import { createCodexWorkbench } from './dashboard.js';
+import { deliveryLinks } from '../../workbench/browser.js';
+import { DEFAULT_BASE_PATH } from '../../workbench/config.js';
 const { values } = parseArgs({
   options: {
     'workspace-root': { type: 'string' },
@@ -28,7 +28,7 @@ if (!['127.0.0.1', '0.0.0.0'].includes(values.host!))
   throw new Error('Use loopback or explicit 0.0.0.0.');
 if (!['workspace-write', 'danger-full-access'].includes(values.sandbox!))
   throw new Error('Invalid sandbox.');
-const host = new WorkbenchHost({
+const host = createCodexWorkbench({
   workspaceRoot: values['workspace-root'],
   stateDir: values['state-dir'] ?? path.join(homedir(), '.local/state/live-delivery'),
   pluginRoot: path.dirname(path.dirname(fileURLToPath(import.meta.url))),

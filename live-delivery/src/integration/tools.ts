@@ -6,15 +6,15 @@ import {
   publishVersion,
   statusReport,
   type PublishInput,
-} from './core.js';
-import { durationSeconds } from './timeline.js';
-import { fileListing, suggestRelative } from './listing.js';
-import type { CdConfig } from './config.js';
-import { dashboardFooter, deliveryLinks } from './browser.js';
-import { TOOL_DESCRIPTIONS } from './prompts.generated.js';
-import { nextArtifactVersion } from './engine.js';
-import { reportActivity } from './controls.js';
-import { nextStep } from './instructions.js';
+} from '../delivery/core.js';
+import { durationSeconds } from '../delivery/timeline.js';
+import { fileListing, suggestRelative } from '../delivery/listing.js';
+import type { CdConfig } from '../workbench/config.js';
+import { dashboardFooter, deliveryLinks } from '../workbench/browser.js';
+import { TOOL_DESCRIPTIONS } from '../prompts.generated.js';
+import { nextArtifactVersion } from '../delivery/engine.js';
+import { reportActivity } from '../delivery/controls.js';
+import { nextStep } from '../delivery/instructions.js';
 
 const milestone = z
   .object({
@@ -118,13 +118,16 @@ export function callTool(cfg: CdConfig, name: ToolName, raw: unknown) {
     const p = TOOL_SCHEMAS[name].parse(raw) as Record<string, unknown>;
     if (name === 'ld_begin') {
       const r = beginCd(cfg, p.task as string, {
-        reviseMilestone: p.revise_milestone as import('./core.js').BeginOptions['reviseMilestone'],
-        nextMilestone: p.next_milestone as import('./types.js').CdMilestoneInput | undefined,
+        reviseMilestone:
+          p.revise_milestone as import('../delivery/core.js').BeginOptions['reviseMilestone'],
+        nextMilestone: p.next_milestone as
+          | import('../delivery/types.js').CdMilestoneInput
+          | undefined,
         planRevision: p.plan_revision as number | undefined,
-        estimates: p.estimates as import('./core.js').BeginOptions['estimates'],
+        estimates: p.estimates as import('../delivery/core.js').BeginOptions['estimates'],
         timeBudgetSec: p.time_budget ? durationSeconds(p.time_budget) : undefined,
         title: p.title as string | undefined,
-        milestones: p.milestones as import('./types.js').CdMilestoneInput[] | undefined,
+        milestones: p.milestones as import('../delivery/types.js').CdMilestoneInput[] | undefined,
       });
       if (!r.ok || !r.state) return result(r.error ?? 'ld_begin failed.', { ok: false });
       return result(

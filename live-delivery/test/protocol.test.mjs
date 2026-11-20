@@ -287,21 +287,59 @@ test('real hook subprocess is quiet at turn start, blocks repeatedly below floor
 });
 
 test('session binding rejects shared-host ambiguity and accepts an explicit clear event', async (t) => {
-  const { bindSession, sessionKeyFor } = await import('../.test-build/config.js');
+  const { bindSession, resolveSession } = await import('../.test-build/session-binding.js');
   const cfg = setup(t, {
     sessionKey: undefined,
     instance: `binding-${Date.now()}-${Math.random()}`,
   });
-  bindSession(cfg, { session_id: 'a', hook_event_name: 'SessionStart' });
-  assert.equal(sessionKeyFor(cfg), 'codex:a');
-  bindSession(cfg, { session_id: 'b', hook_event_name: 'SessionStart' });
-  assert.throws(() => sessionKeyFor(cfg), /ambiguous/);
-  bindSession(cfg, { session_id: 'c', hook_event_name: 'SessionStart', source: 'clear' });
-  assert.equal(sessionKeyFor(cfg), 'codex:c');
+  assert.equal(bindSession(cfg, { sessionId: 'a' }), true);
+  assert.equal(resolveSession(cfg).sessionKey, 'codex:a');
+  assert.equal(bindSession(cfg, { sessionId: 'b' }), false);
+  assert.throws(() => resolveSession(cfg), /ambiguous/);
+  assert.equal(bindSession(cfg, { sessionId: 'c', replacesSession: true }), true);
+  assert.equal(resolveSession(cfg).sessionKey, 'codex:c');
+});
+
+test('Qwen session replacement and resume preserve the right delivery and do not rebind on dashboard reads', async (t) => {
+  const { bindSession, resolveSession, persistDashboard, readDashboard } = await import(
+    '../.test-build/session-binding.js'
+  );
+  const { normalizeCommandHook } = await import('../.test-build/command-hook.js');
+  const first = setup(t, {
+    harness: 'qwen-code',
+    sessionKey: undefined,
+    instance: 'first-' + Date.now() + Math.random(),
+  });
+  const resumed = { ...first, instance: 'resumed-' + first.instance };
+  const event = (sessionId, source) =>
+    normalizeCommandHook(
+      {
+        hook_event_name: 'SessionStart',
+        session_id: sessionId,
+        cwd: first.workspaceDir,
+        source,
+      },
+      Date.now(),
+    );
+  assert.equal(bindSession(first, event('original', 'startup')), true);
+  const original = resolveSession(first);
+  const task = startTask(original, 'Original task').state;
+  assert.equal(bindSession(first, event('cleared', 'clear')), true);
+  const cleared = resolveSession(first);
+  assert.equal(currentState(cleared), null);
+  assert.notEqual(startTask(cleared, 'Another task').state.id, task.id);
+  persistDashboard({ ...first, port: 18792, accessToken: 'temporary-test-token' });
+  assert.equal(readDashboard({ ...original, instance: first.instance }).port, 18792);
+  assert.equal(resolveSession(first).sessionKey, 'qwen-code:cleared');
+  assert.equal(bindSession(resumed, event('original', 'resume')), true);
+  assert.equal(currentState(resolveSession(resumed)).id, task.id);
+  assert.equal(resolveSession(first).sessionKey, 'qwen-code:cleared');
 });
 
 test('transcript estimates deduplicate Claude messages and Codex totals, excluding earlier turns', async (t) => {
   const { updateUsageFromTranscript, readUsage } = await import('../.test-build/usage.js');
+  const { decodeCodexUsage } = await import('../.test-build/codex-usage.js');
+  const { decodeClaudeUsage } = await import('../.test-build/claude-usage.js');
   for (const harness of ['claude-code', 'codex']) {
     const cfg = setup(t, { harness });
     const s = beginCd(cfg, 'Meter', {}, 1000000).state;
@@ -338,8 +376,9 @@ test('transcript estimates deduplicate Claude messages and Codex totals, excludi
             line(1000300, '', 300, 35),
           ];
     writeFileSync(transcript, lines.join('\n') + '\n');
-    updateUsageFromTranscript(cfg, transcript);
-    updateUsageFromTranscript(cfg, transcript);
+    const decode = harness === 'codex' ? decodeCodexUsage : decodeClaudeUsage;
+    updateUsageFromTranscript(cfg, transcript, decode);
+    updateUsageFromTranscript(cfg, transcript, decode);
     const usage = readUsage(cfg.workspaceDir, s.id);
     assert.equal(usage.input, 100);
     assert.equal(usage.output, 15);
@@ -347,7 +386,7 @@ test('transcript estimates deduplicate Claude messages and Codex totals, excludi
 });
 
 test('Codex display inherits CODEX_HOME config without using Claude model variables', async (t) => {
-  const { configuredModel } = await import('../.test-build/model.js');
+  const { configuredCodexModel } = await import('../.test-build/model.js');
   const cfg = setup(t);
   const env = { CODEX_HOME: cfg.workspaceDir, ANTHROPIC_MODEL: 'claude-only' };
   const file = path.join(cfg.workspaceDir, 'config.toml');
@@ -355,39 +394,31 @@ test('Codex display inherits CODEX_HOME config without using Claude model variab
     file,
     "model = 'local-codex-model' # native default\n[model_providers.local]\nmodel = 'not-the-top-level-model'\n",
   );
-  assert.equal(configuredModel('codex', env), 'local-codex-model');
-  assert.equal(configuredModel('claude-code', env), 'claude-only');
-  assert.equal(
-    configuredModel('codex', { ...env, QWEN_LD_MODEL: 'explicit-label' }),
-    'explicit-label',
-  );
+  assert.equal(configuredCodexModel(env), 'local-codex-model');
+  assert.equal(configuredCodexModel({ ...env, QWEN_LD_MODEL: 'explicit-label' }), 'explicit-label');
   writeFileSync(file, 'invalid = [');
-  assert.equal(configuredModel('codex', env), 'unknown');
+  assert.equal(configuredCodexModel(env), 'unknown');
 });
 
 test('native hook model updates explicit session bindings and survives model-less hooks', async (t) => {
-  const { bindSession, sessionKeyFor } = await import('../.test-build/config.js');
+  const { bindSession, resolveSession } = await import('../.test-build/session-binding.js');
   const cfg = setup(t, {
     instance: `model-${Date.now()}-${Math.random()}`,
     model: 'configured-default',
   });
   bindSession(cfg, {
-    session_id: 'test',
-    hook_event_name: 'SessionStart',
+    sessionId: 'test',
     model: 'native-override',
   });
-  assert.equal(sessionKeyFor(cfg), cfg.sessionKey);
-  assert.equal(cfg.model, 'native-override');
+  assert.equal(resolveSession(cfg).sessionKey, cfg.sessionKey);
+  assert.equal(resolveSession(cfg).model, 'native-override');
   bindSession(cfg, {
-    session_id: 'test',
-    hook_event_name: 'UserPromptSubmit',
+    sessionId: 'test',
     model: 'switched-model',
   });
-  sessionKeyFor(cfg);
-  assert.equal(cfg.model, 'switched-model');
-  bindSession(cfg, { session_id: 'test', hook_event_name: 'Stop' });
-  sessionKeyFor(cfg);
-  assert.equal(cfg.model, 'switched-model');
+  assert.equal(resolveSession(cfg).model, 'switched-model');
+  bindSession(cfg, { sessionId: 'test' });
+  assert.equal(resolveSession(cfg).model, 'switched-model');
 });
 
 test('public $ld:go hook shows onboarding and preserves the original task text', (t) => {

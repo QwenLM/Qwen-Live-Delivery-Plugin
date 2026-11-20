@@ -67,6 +67,12 @@ codex plugin marketplace remove live-delivery-local --json
 
 </details>
 
+### Qwen Code（仅从 CLI 发起）
+
+在仓库根目录运行 `qwen extensions link "$PWD/live-delivery"` 并确认安装。随后在你的项目目录新开 `qwen`，输入 `$ld:go 你的任务`，从 CLI 输出打开工作台。扩展使用你已有的模型和审批设置；交互式会话可直接批准插件工具调用。
+
+工作台只监听本机。可以预览已发布的版本和追加反馈；反馈在该会话的下一个工具边界或 CLI 回合送达，不会从网页启动 Qwen、唤醒空闲进程或强行中断正在运行的工具。并行任务请分别启动两个 `qwen` 进程，不要在两个进程中恢复同一个 Qwen 会话。关闭 CLI 后，对应工作台也会关闭。
+
 ## 快速开始
 
 在项目目录启动 Codex：

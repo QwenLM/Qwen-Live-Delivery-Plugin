@@ -7,7 +7,7 @@ import {
   nextArtifactVersion,
   workFloorSummary,
 } from './engine.js';
-import { sessionKeyFor, type CdConfig } from './config.js';
+import type { DeliveryContext, DeliveryScope } from './context.js';
 import {
   QWEN_LD_PROTOCOL,
   getActiveId,
@@ -74,16 +74,15 @@ export function activeRef(workspaceDir: string, key: string): CdSessionRef | nul
   const id = getActiveId(workspaceDir, key);
   return id ? { workspaceDir, id } : null;
 }
-export function currentState(cfg: CdConfig): CdReleaseState | null {
-  const ref = activeRef(cfg.workspaceDir, sessionKeyFor(cfg));
+export function currentState(cfg: DeliveryScope): CdReleaseState | null {
+  const ref = activeRef(cfg.workspaceDir, cfg.sessionKey);
   return ref ? readState(ref.workspaceDir, ref.id) : null;
 }
-export function ownedStates(cfg: CdConfig): CdReleaseState[] {
-  const key = sessionKeyFor(cfg);
-  return listStates(cfg.workspaceDir).filter((s) => s.sessionKey === key);
+export function ownedStates(cfg: DeliveryScope): CdReleaseState[] {
+  return listStates(cfg.workspaceDir).filter((s) => s.sessionKey === cfg.sessionKey);
 }
 export function beginCd(
-  cfg: CdConfig,
+  cfg: DeliveryContext,
   task: string,
   opts: BeginOptions = {},
   now = Date.now(),
@@ -294,7 +293,7 @@ export function continuationFrom(
   };
 }
 function createSession(
-  cfg: CdConfig,
+  cfg: DeliveryContext,
   task: string,
   opts: BeginOptions,
   now: number,
@@ -310,7 +309,7 @@ function createSession(
     id: makeSessionId(name),
     name,
     task,
-    sessionKey: sessionKeyFor(cfg),
+    sessionKey: cfg.sessionKey,
     model: cfg.model,
     deliverEverySec: opts.deliverEverySec ?? cfg.deliverEverySec,
     timeBudgetSec: opts.timeBudgetSec ?? cfg.timeBudgetSec,
@@ -333,7 +332,7 @@ function createSession(
 }
 // An explicit user request may resume delivery after Stop.
 export function startTask(
-  cfg: CdConfig,
+  cfg: DeliveryContext,
   task: string,
   now = Date.now(),
   continuation?: CdReleaseState['continuation'],
@@ -345,7 +344,11 @@ export function startTask(
     return { ok: true, state: createSession(cfg, task, {}, now, continuation) };
   });
 }
-export function publishVersion(cfg: CdConfig, input: PublishInput, now = Date.now()): Result {
+export function publishVersion(
+  cfg: DeliveryContext,
+  input: PublishInput,
+  now = Date.now(),
+): Result {
   return withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (!state) return { ok: false, error: 'No active CD session — call ld_begin first.' };
@@ -463,7 +466,7 @@ export function publishVersion(cfg: CdConfig, input: PublishInput, now = Date.no
     }
   });
 }
-export function markDone(cfg: CdConfig, summary: string, now = Date.now()): Result {
+export function markDone(cfg: DeliveryContext, summary: string, now = Date.now()): Result {
   return withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (!state) return { ok: false, error: 'No active CD session — call ld_begin first.' };
@@ -527,13 +530,13 @@ export function markDone(cfg: CdConfig, summary: string, now = Date.now()): Resu
     return { ok: true, state: next };
   });
 }
-export function statusReport(cfg: CdConfig, now = Date.now()): string | null {
+export function statusReport(cfg: DeliveryScope, now = Date.now()): string | null {
   const state = currentState(cfg);
   return state
     ? `${buildStatusLine(state, now)} · ${state.publishes.length} published version(s) · next publication V${nextArtifactVersion(state)}\n${nextStep(state, now).message}`
     : null;
 }
-export function runDeadlineTick(cfg: CdConfig, now = Date.now()): void {
+export function runDeadlineTick(cfg: DeliveryScope, now = Date.now()): void {
   withLock(cfg.workspaceDir, () => {
     for (const state of ownedStates(cfg)) {
       if (!['working', 'delivered'].includes(state.status)) continue;

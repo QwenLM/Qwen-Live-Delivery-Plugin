@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test test/*.test.mjs",
     "test:codex": "node test/workbench-native.mjs",
+    "test:qwen": "node test/qwen-native.mjs",
     "verify": "npm run build && npm run typecheck && npm test && npm run check:release",
     "check:release": "node scripts/check-release.mjs",
     "package": "npm run build && npm run check:release && node scripts/package.mjs",
@@ -32,6 +33,7 @@
   "files": [
     ".codex-plugin/plugin.json",
     ".mcp.json",
+    "qwen-extension.json",
     "hooks/",
     "skills/",
     "dist/",

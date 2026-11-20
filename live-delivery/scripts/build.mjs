@@ -13,8 +13,6 @@ import { dependencyNotices } from './licenses.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 copyFileSync(path.join(root, '../LICENSE'), path.join(root, 'LICENSE'));
-if (process.argv.slice(2).some((value) => value !== 'codex'))
-  throw new Error('This package builds the Codex adapter only.');
 const descriptions = JSON.parse(
   readFileSync(path.join(root, 'src/prompts/tool-descriptions.json'), 'utf8'),
 );
@@ -46,7 +44,7 @@ function collectAssets(dir, prefix = '') {
   }
 }
 await build({
-  entryPoints: [path.join(root, 'src/budget.ts')],
+  entryPoints: [path.join(root, 'src/delivery/budget.ts')],
   bundle: true,
   format: 'iife',
   globalName: 'QWEN_LD_BUDGET',
@@ -66,16 +64,22 @@ const options = {
   platform: 'node',
   format: 'esm',
   target: 'node22',
-  define: { QWEN_LD_HARNESS: JSON.stringify('codex') },
   legalComments: 'eof',
 };
 const bundledPackages = new Set();
-for (const entry of ['server', 'hook', 'viewer', 'workbench', 'setup']) {
+const entries = {
+  server: 'server',
+  hook: 'hook',
+  viewer: 'workbench/viewer',
+  workbench: 'harnesses/codex/workbench',
+  setup: 'harnesses/codex/setup',
+};
+for (const [entry, source] of Object.entries(entries)) {
   const result = await build({
     ...options,
     metafile: true,
     absWorkingDir: root,
-    entryPoints: [path.join(root, 'src', `${entry}.ts`)],
+    entryPoints: [path.join(root, 'src', `${source}.ts`)],
     outfile: path.join(root, 'dist', `${entry}.mjs`),
     banner: {
       js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
@@ -90,36 +94,48 @@ rmSync(path.join(root, '.test-build'), { recursive: true, force: true });
 await build({
   ...options,
   entryPoints: [
-    'core',
-    'budget',
-    'activity',
-    'engine',
-    'state',
-    'config',
-    'model',
-    'policy',
-    'tools',
-    'usage',
-    'lock',
-    'publication',
-    'timeline',
-    'controls',
-    'feedback-handoff',
-    'read-model',
-    'http',
-    'request-body',
-    'process',
-    'access',
-    'registry',
-    'hook-trust',
-    'browser',
-    'workbench-host',
-    'native-rpc',
-    'setup-diagnostics',
-    'instructions',
-    'prior-context',
-    'provider-env',
-  ].map((name) => path.join(root, 'src', `${name}.ts`)),
+    'delivery/core',
+    'delivery/budget',
+    'delivery/engine',
+    'delivery/state',
+    'integration/config',
+    'harnesses/codex/model',
+    'delivery/policy',
+    'integration/tools',
+    'integration/usage',
+    'delivery/lock',
+    'delivery/publication',
+    'delivery/timeline',
+    'delivery/controls',
+    'workbench/feedback-handoff',
+    'workbench/read-model',
+    'workbench/http',
+    'workbench/request-body',
+    'shared/process',
+    'workbench/access',
+    'workbench/registry',
+    'harnesses/codex/hook-trust',
+    'workbench/browser',
+    'workbench/workbench-host',
+    'harnesses/codex/native-rpc',
+    'harnesses/codex/setup-diagnostics',
+    'delivery/instructions',
+    'workbench/prior-context',
+    'harnesses/codex/provider-env',
+    'integration/session-binding',
+    'integration/command-hook',
+    'integration/hook-activity',
+    'harnesses/codex/trace',
+    'harnesses/codex/dashboard',
+    'harnesses/codex/cli',
+  ]
+    .map((source) => ({ in: path.join(root, 'src', source + '.ts'), out: path.basename(source) }))
+    .concat([
+      { in: path.join(root, 'src/harnesses/codex/usage.ts'), out: 'codex-usage' },
+      { in: path.join(root, 'src/harnesses/claude-code/usage.ts'), out: 'claude-usage' },
+    ]),
   outdir: path.join(root, '.test-build'),
 });
-console.log('Built self-contained Codex MCP server and hooks; no sibling repository required.');
+console.log(
+  'Built self-contained Live Delivery MCP server and hooks; no sibling repository required.',
+);

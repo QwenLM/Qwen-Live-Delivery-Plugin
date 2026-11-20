@@ -1,43 +1,9 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
-import path from 'node:path';
+import type { AgentOutput, ExecutionEvent, ExecutionTrace } from '../../delivery/events.js';
+import { publicAgentText, publicFiles } from '../../shared/public-activity.js';
 
-export type ExecutionEvent = {
-  id: string;
-  tool: string;
-  kind: 'command' | 'files' | 'search' | 'tool';
-  status: 'running' | 'completed' | 'failed' | 'interrupted';
-  ts: number;
-  detail?: string;
-  files?: string[];
-  order?: number;
-  failure?: 'sandbox-unavailable';
-};
-export type AgentOutput = {
-  /** Sort untimestamped native output before its next recorded publication. */
-  beforeTs?: number;
-  id: string;
-  text: string;
-  status: 'streaming' | 'completed' | 'interrupted';
-  ts: number;
-  order: number;
-};
-type ExecutionTrace = { events: ExecutionEvent[]; output: AgentOutput[] };
 const cache = new Map<string, { stamp: string; trace: ExecutionTrace }>();
-const privatePath = /(?:^|\/)(?:\.[^/]+|auth\.json|credentials?[^/]*|config\.toml)(?:\/|$)/i;
-function publicFiles(paths: unknown[], workspace: string): string[] {
-  return paths
-    .flatMap((value) => {
-      if (typeof value !== 'string' || /[\x00-\x1f]/.test(value)) return [];
-      const rel = path
-        .relative(workspace, path.resolve(workspace, value))
-        .split(path.sep)
-        .join('/');
-      return rel && !rel.startsWith('../') && rel !== '..' && !privatePath.test(rel)
-        ? [rel.slice(0, 160)]
-        : [];
-    })
-    .slice(0, 3);
-}
+
 /** Describe commands from a small vocabulary, never copy command arguments or output. */
 function commandLabel(command: unknown): string | undefined {
   if (typeof command !== 'string') return undefined;
@@ -48,7 +14,7 @@ function commandLabel(command: unknown): string | undefined {
   if (known) return known[1].replace(/\s+/g, ' ');
   return /(?:^|[\s;&|])(python3?|node|rg|cat|sed|ls)(?=\s|$)/.exec(command)?.[1];
 }
-export function executionEvent(
+export function codexExecutionEvent(
   raw: unknown,
   workspace: string,
   now: number,
@@ -99,34 +65,9 @@ export function executionEvent(
       return { ...base, kind: 'tool', tool: item.tool };
     return null;
   }
-  // CLI hooks cover clients without a JSON trajectory stream. Only tool metadata is used.
-  if (event.hook_event_name === 'PostToolUse' && typeof event.tool_name === 'string') {
-    const tool = event.tool_name;
-    if (!/^[\w.:/-]{1,120}$/.test(tool)) return null;
-    const input = event.tool_input && typeof event.tool_input === 'object' ? event.tool_input : {};
-    return {
-      id: typeof event.tool_use_id === 'string' ? event.tool_use_id : `${tool}-${now}`,
-      tool,
-      kind: 'tool',
-      status: 'completed',
-      ts: now,
-      files: publicFiles([input.file_path, input.path], workspace),
-    };
-  }
   return null;
 }
-/** Public text only. Never accept reasoning items, tool output or arbitrary response payloads. */
-export function publicAgentText(text: string): string {
-  return text
-    .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
-    .replace(/([#?&]access=)[^\s)\]<>]+/gi, '$1[REDACTED]')
-    .replace(/\b(?:sk-|sk_)[a-zA-Z0-9_-]{16,}/g, '[REDACTED]')
-    .replace(
-      /(\b(?:api[_-]?key|access[_-]?token|secret|password)\s*[=:]\s*)[^\s,;]+/gi,
-      '$1[REDACTED]',
-    )
-    .replace(/\bBearer\s+[a-zA-Z0-9._~+/-]+=*/gi, 'Bearer [REDACTED]');
-}
+
 /** One bounded read for public messages and tools. Partial JSON and reasoning are ignored. */
 export function readExecutionTrace(
   file: string,
@@ -194,7 +135,7 @@ export function readExecutionTrace(
             order: prior?.order ?? order,
           });
         }
-        const entry = executionEvent(parsed, workspace, ts);
+        const entry = codexExecutionEvent(parsed, workspace, ts);
         if (!entry) continue;
         if (segment) entry.id += `@${segment}`;
         const prior = result.get(entry.id) ?? previous?.trace.events.find((e) => e.id === entry.id);

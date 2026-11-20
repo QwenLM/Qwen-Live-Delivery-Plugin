@@ -1,13 +1,9 @@
 import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);
 
-// src/config.ts
-import { createHash as createHash2, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdirSync as mkdirSync2, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import path3 from "node:path";
-import os from "node:os";
+// src/integration/config.ts
+import path from "node:path";
 
-// src/engine.ts
+// src/delivery/engine.ts
 var DURATION_RE = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|sec|secs|m|min|mins|h|hr|hrs|d)?\s*$/i;
 var UNIT_SECONDS = {
   ms: 1e-3,
@@ -85,10 +81,878 @@ function humanizeDuration(totalSec) {
   return remMin > 0 ? `${hours}h${remMin}m` : `${hours}h`;
 }
 
-// src/model.ts
-import { readFileSync } from "node:fs";
+// src/shared/process.ts
+function requireSupportedPlatform(platform = process.platform) {
+  if (platform !== "linux" && platform !== "darwin")
+    throw new Error("This plugin supports macOS and Linux. Native Windows is not supported.");
+}
+
+// src/workbench/config.ts
+var DEFAULT_BASE_PATH = "/live-delivery";
+
+// src/integration/config.ts
+function loadConfig(adapter, workspace) {
+  requireSupportedPlatform();
+  const env = process.env;
+  const port = Number(env.QWEN_LD_PORT ?? adapter.defaultPort);
+  if (!Number.isInteger(port) || port < 0 || port > 65535)
+    throw new Error("QWEN_LD_PORT must be 0..65535.");
+  const basePath = "/" + (env.QWEN_LD_BASE_PATH ?? DEFAULT_BASE_PATH).replace(/^\/+|\/+$/g, "");
+  if (!/^\/[a-zA-Z0-9_/-]+$/.test(basePath)) throw new Error("Invalid QWEN_LD_BASE_PATH.");
+  return {
+    harness: adapter.id,
+    workspaceDir: path.resolve(env.QWEN_LD_WORKSPACE || workspace || process.cwd()),
+    instance: adapter.instance(),
+    sessionKey: adapter.explicitSessionKey?.(),
+    port,
+    basePath,
+    dashboardFile: env.QWEN_LD_DASHBOARD_FILE || void 0,
+    bindHost: adapter.loopbackOnly || env.QWEN_LD_BIND_HOST === "127.0.0.1" ? "127.0.0.1" : "0.0.0.0",
+    openBrowser: env.QWEN_LD_OPEN_BROWSER === "never" ? "never" : env.QWEN_LD_OPEN_BROWSER === "always" ? "always" : "auto",
+    deliverEverySec: 120,
+    timeBudgetSec: Math.max(1, parseDurationSec(env.QWEN_LD_TIME_BUDGET, 1800)),
+    minWorkingSec: 0,
+    minReleases: 1,
+    requirePlanApproval: false,
+    planMode: "rolling",
+    model: env.QWEN_LD_MODEL || adapter.model(),
+    channels: false
+  };
+}
+
+// src/integration/session-binding.ts
+import { createHash as createHash2 } from "node:crypto";
+import { mkdirSync as mkdirSync4 } from "node:fs";
+import os from "node:os";
+import path5 from "node:path";
+
+// src/delivery/state.ts
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from "node:fs";
+import path2 from "node:path";
+var STATE_ROOT_DIRNAME = ".live-delivery";
+var QWEN_LD_PROTOCOL = "v1";
+var STATE_FILENAME = "release.json";
+function cdRootDir(workspaceDir) {
+  return path2.join(workspaceDir, STATE_ROOT_DIRNAME);
+}
+function sessionDir(workspaceDir, id) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || id === "." || id === "..")
+    throw new Error("Invalid CD session id");
+  return path2.join(cdRootDir(workspaceDir), id);
+}
+function stateFilePath(workspaceDir, id) {
+  return path2.join(sessionDir(workspaceDir, id), STATE_FILENAME);
+}
+var ACTIVE_INDEX_FILENAME = "_active.json";
+function makeSessionId(name) {
+  const src = name || "cd";
+  const base = src.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
+  const rand = createHash("sha256").update(`${name}:${process.pid}:${Date.now()}:${Math.random()}`).digest("hex").slice(0, 6);
+  const asciiRatio = base.replace(/-/g, "").length / Math.max(1, src.trim().length);
+  const usable = base && asciiRatio >= 0.4 ? base : "cd";
+  return `${usable}-${rand}`;
+}
+function getActiveId(workspaceDir, sessionKey) {
+  try {
+    const file = path2.join(cdRootDir(workspaceDir), ACTIVE_INDEX_FILENAME);
+    const map = JSON.parse(readFileSync(file, "utf8"));
+    return map?.[sessionKey] ?? null;
+  } catch {
+    return null;
+  }
+}
+function setActiveId(workspaceDir, sessionKey, id) {
+  const dir = cdRootDir(workspaceDir);
+  mkdirSync(dir, { recursive: true });
+  const file = path2.join(dir, ACTIVE_INDEX_FILENAME);
+  let map = {};
+  try {
+    map = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    map = {};
+  }
+  map[sessionKey] = id;
+  const tmp = path2.join(dir, `.${ACTIVE_INDEX_FILENAME}.${process.pid}.${Date.now()}.tmp`);
+  writeFileSync(tmp, JSON.stringify(map, null, 2), "utf8");
+  renameSync(tmp, file);
+}
+function readState(workspaceDir, id) {
+  const file = stateFilePath(workspaceDir, id);
+  if (!existsSync(file)) {
+    return null;
+  }
+  try {
+    const raw = readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && parsed.stateVersion === 1 && parsed.protocol === QWEN_LD_PROTOCOL && parsed.id === id && typeof parsed.name === "string" && parsed.name.trim()) {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function writeState(workspaceDir, state) {
+  const dir = sessionDir(workspaceDir, state.id);
+  mkdirSync(dir, { recursive: true });
+  const file = path2.join(dir, STATE_FILENAME);
+  const tmp = path2.join(dir, `.${STATE_FILENAME}.${process.pid}.${Date.now()}.tmp`);
+  writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
+  renameSync(tmp, file);
+}
+function listStates(workspaceDir) {
+  const root = cdRootDir(workspaceDir);
+  if (!existsSync(root)) {
+    return [];
+  }
+  const out = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    try {
+      const state = readState(workspaceDir, entry.name);
+      if (state) out.push(state);
+    } catch {
+    }
+  }
+  return out;
+}
+
+// src/delivery/lock.ts
+import {
+  mkdirSync as mkdirSync2,
+  readFileSync as readFileSync2,
+  readdirSync as readdirSync2,
+  rmSync,
+  rmdirSync,
+  statSync as statSync2,
+  writeFileSync as writeFileSync2
+} from "node:fs";
+import path3 from "node:path";
+var EMPTY_LOCK_GRACE_MS = 3e4;
+function recoverLock(lock) {
+  try {
+    const pid = Number(readFileSync2(path3.join(lock, "pid"), "utf8"));
+    if (Number.isInteger(pid) && pid > 0) {
+      try {
+        process.kill(pid, 0);
+      } catch (error) {
+        if (error.code === "ESRCH") {
+          rmSync(lock, { recursive: true, force: true });
+          return true;
+        }
+      }
+    }
+    return false;
+  } catch (error) {
+    if (error.code !== "ENOENT") return false;
+  }
+  try {
+    const before = statSync2(lock);
+    if (Date.now() - before.mtimeMs < EMPTY_LOCK_GRACE_MS || readdirSync2(lock).length !== 0)
+      return false;
+    const current = statSync2(lock);
+    if (current.dev !== before.dev || current.ino !== before.ino || current.mtimeMs !== before.mtimeMs)
+      return false;
+    rmdirSync(lock);
+    return true;
+  } catch (error) {
+    return error.code === "ENOENT";
+  }
+}
+function withLock(workspace, fn) {
+  const root = cdRootDir(workspace);
+  mkdirSync2(root, { recursive: true });
+  const lock = path3.join(root, "_write.lock");
+  const until = Date.now() + 5e3;
+  for (; ; ) {
+    try {
+      mkdirSync2(lock);
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      if (recoverLock(lock)) continue;
+      if (Date.now() >= until) throw new Error(`CD state is busy: ${lock}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  try {
+    writeFileSync2(path3.join(lock, "pid"), String(process.pid));
+    return fn();
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
+// src/shared/json.ts
+import { randomUUID } from "node:crypto";
+import { mkdirSync as mkdirSync3, readFileSync as readFileSync3, renameSync as renameSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import path4 from "node:path";
+function atomicJson(file, value) {
+  mkdirSync3(path4.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync3(tmp, JSON.stringify(value, null, 2), { mode: 384 });
+  renameSync2(tmp, file);
+}
+function readJson(file) {
+  try {
+    return JSON.parse(readFileSync3(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// src/integration/session-binding.ts
+function identity(cfg) {
+  return `${cfg.harness}-${createHash2("sha256").update(cfg.instance).digest("hex").slice(0, 20)}`;
+}
+function runtimeFile(cfg, suffix) {
+  return path5.join(cdRootDir(cfg.workspaceDir), "_runtime", `${identity(cfg)}.${suffix}.json`);
+}
+function hostFile(cfg) {
+  const dir = path5.join(
+    os.tmpdir(),
+    `live-delivery-host-${process.getuid?.() ?? os.userInfo().username}`
+  );
+  return path5.join(dir, `${identity(cfg)}.json`);
+}
+function bindSession(cfg, event) {
+  return withLock(cfg.workspaceDir, () => {
+    const sessionKey = `${cfg.harness}:${event.sessionId}`;
+    const file = runtimeFile(cfg, "binding");
+    const previous = readJson(file);
+    const host = readJson(hostFile(cfg));
+    const conflicting = !event.replacesSession && !!(previous?.conflicting || previous && previous.sessionKey !== sessionKey || host?.conflicting || host && (host.sessionKey !== sessionKey || host.workspaceDir !== cfg.workspaceDir));
+    const model = event.model ?? (previous?.sessionKey === sessionKey ? previous.model : void 0);
+    if (previous?.sessionKey !== sessionKey || previous?.conflicting !== conflicting || previous?.model !== model)
+      atomicJson(file, { sessionKey, model, conflicting });
+    if (host?.sessionKey !== sessionKey || host?.conflicting !== conflicting || host?.workspaceDir !== cfg.workspaceDir) {
+      mkdirSync4(path5.dirname(hostFile(cfg)), { recursive: true, mode: 448 });
+      atomicJson(hostFile(cfg), {
+        workspaceDir: cfg.workspaceDir,
+        sessionKey,
+        conflicting
+      });
+    }
+    return !conflicting;
+  });
+}
+function readBoundModel(cfg, nativeSessionId) {
+  const binding = readJson(runtimeFile(cfg, "binding"));
+  if (!binding?.conflicting && binding?.sessionKey === `${cfg.harness}:${nativeSessionId}`)
+    return binding.model;
+}
+function readDashboard(cfg) {
+  const saved = readJson(runtimeFile(cfg, "config"));
+  return saved ? {
+    ...cfg,
+    port: saved.port,
+    accessToken: saved.accessToken
+  } : cfg;
+}
+
+// src/workbench/browser.ts
+import { existsSync as existsSync2, readFileSync as readFileSync4 } from "node:fs";
+import { networkInterfaces } from "node:os";
+
+// src/delivery/timeline.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
+function durationSeconds(value) {
+  const seconds = parseDurationSec(value, -1);
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 7 * 86400)
+    throw new Error("Use a positive duration such as 30s, 15m or 3h, at most 7d.");
+  return seconds;
+}
+function normalizeMilestones(input, startedTs) {
+  const seen = /* @__PURE__ */ new Set();
+  return input.map((item) => {
+    if (seen.has(item.id)) throw new Error(`Duplicate milestone id: ${item.id}`);
+    seen.add(item.id);
+    return {
+      id: item.id,
+      title: item.title,
+      scope: item.scope,
+      acceptance: item.acceptance,
+      targetTs: startedTs + durationSeconds(item.target_after) * 1e3
+    };
+  }).sort((a, b) => a.targetTs - b.targetTs);
+}
+var planRevision = (state) => state.planRevision ?? (state.milestones?.length ? 1 : 0);
+var milestoneTime = (item) => item.estimatedTs ?? item.targetTs;
+function pendingMilestones(state) {
+  return (state.milestones ?? []).filter((m) => !state.publishes.some((p) => p.artifact?.milestoneId === m.id)).sort((a, b) => milestoneTime(a) - milestoneTime(b));
+}
+function syncPlanDeadline(state) {
+  if (!state.milestones?.length) return state;
+  return {
+    ...state,
+    nextDeadlineTs: pendingMilestones(state)[0] ? milestoneTime(pendingMilestones(state)[0]) : state.startedTs + state.timeBudgetSec * 1e3
+  };
+}
+function message(role, text, ts, extra = {}) {
+  return { id: randomUUID2(), role, text, ts, ...extra };
+}
+
+// src/delivery/instructions.ts
+function nextStep(state, now = Date.now()) {
+  if (["done", "paused"].includes(state.status))
+    return { kind: "finished", message: "This task is finished or stopped. End the turn." };
+  if (state.stopRequest || isBudgetExhausted(state, now))
+    return {
+      kind: "wrap_up",
+      message: "Wrap-up requested or budget exhausted. Start no new scope. Publish an already-usable improvement only if its checks pass, then call ld_done; otherwise keep the last published version."
+    };
+  if (!state.milestones?.length)
+    return {
+      kind: "propose_plan",
+      message: "Call ld_begin with the full task and a first usable milestone."
+    };
+  const pending = pendingMilestones(state);
+  if (pending.length)
+    return {
+      kind: "deliver_pending",
+      milestone_id: pending[0].id,
+      message: `Continue the next pending milestone ${JSON.stringify(pending[0].id)}. Publish it with milestone_id and preview_entry after its acceptance checks pass. Do not append another milestone while pending work remains.`
+    };
+  if (state.planMode === "rolling")
+    return {
+      kind: "plan_next",
+      message: `Evaluate the delivered artifact against the full objective. Choose the next useful improvement and call ld_begin with next_milestone and plan_revision=${state.planRevision ?? 1}. Keep the published version available. The current plan ending does not end rolling delivery.`
+    };
+  return {
+    kind: "finish_fixed_plan",
+    message: "The fixed plan is delivered. Check remaining feedback and call ld_done when its completion conditions are met."
+  };
+}
+
+// src/delivery/core.ts
+var QWEN_LD_PLUGIN_VERSION = "0.1.0";
+function activeRef(workspaceDir, key) {
+  const id = getActiveId(workspaceDir, key);
+  return id ? { workspaceDir, id } : null;
+}
+function currentState(cfg) {
+  const ref = activeRef(cfg.workspaceDir, cfg.sessionKey);
+  return ref ? readState(ref.workspaceDir, ref.id) : null;
+}
+function ownedStates(cfg) {
+  return listStates(cfg.workspaceDir).filter((s) => s.sessionKey === cfg.sessionKey);
+}
+function createSession(cfg, task, opts, now, continuation) {
+  const name = opts.title || task.trim().replace(/\s+/g, " ").slice(0, 52) || "CD session";
+  const state = syncPlanDeadline({
+    stateVersion: 1,
+    planMode: cfg.planMode ?? "fixed",
+    protocol: QWEN_LD_PROTOCOL,
+    pluginVersion: QWEN_LD_PLUGIN_VERSION,
+    harness: cfg.harness,
+    id: makeSessionId(name),
+    name,
+    task,
+    sessionKey: cfg.sessionKey,
+    model: cfg.model,
+    deliverEverySec: opts.deliverEverySec ?? cfg.deliverEverySec,
+    timeBudgetSec: opts.timeBudgetSec ?? cfg.timeBudgetSec,
+    startedTs: now,
+    nextDeadlineTs: computeNextDeadline(now, opts.deliverEverySec ?? cfg.deliverEverySec),
+    status: "working",
+    publishes: [],
+    ...continuation ? { continuation } : {},
+    lastActivityTs: now,
+    activityCount: 0,
+    milestones: opts.milestones ? normalizeMilestones(opts.milestones, now) : [],
+    planRevision: opts.milestones?.length ? 1 : 0,
+    messages: [message("user", task, now)],
+    feedback: [],
+    settingsRevision: 1
+  });
+  writeState(cfg.workspaceDir, state);
+  setActiveId(cfg.workspaceDir, state.sessionKey, state.id);
+  return state;
+}
+function startTask(cfg, task, now = Date.now(), continuation) {
+  return withLock(cfg.workspaceDir, () => {
+    const previous = currentState(cfg);
+    if (previous && ["working", "delivered"].includes(previous.status))
+      return { ok: false, error: "A CD task is already running. Finish or stop it first." };
+    return { ok: true, state: createSession(cfg, task, {}, now, continuation) };
+  });
+}
+function runDeadlineTick(cfg, now = Date.now()) {
+  withLock(cfg.workspaceDir, () => {
+    for (const state of ownedStates(cfg)) {
+      if (!["working", "delivered"].includes(state.status)) continue;
+      if (state.approvalPendingSinceTs) continue;
+      if (isBudgetExhausted(state, now)) {
+        if (!state.stopRequest)
+          writeState(cfg.workspaceDir, {
+            ...state,
+            stopRequest: { id: `budget-${state.id}`, requestedTs: now, reason: "budget" }
+          });
+      } else if (state.milestones?.length) {
+        const next = syncPlanDeadline(state);
+        const newlyMissed = pendingMilestones(state).map(milestoneTime).filter((ts) => ts <= now && !(state.missedDeadlines ?? []).includes(ts));
+        if (next.nextDeadlineTs !== state.nextDeadlineTs || newlyMissed.length)
+          writeState(cfg.workspaceDir, {
+            ...next,
+            missedDeadlines: [...state.missedDeadlines ?? [], ...newlyMissed].slice(-48)
+          });
+      } else if (now >= state.nextDeadlineTs) {
+        writeState(cfg.workspaceDir, {
+          ...state,
+          nextDeadlineTs: computeNextDeadline(now, state.deliverEverySec),
+          missedDeadlines: [...state.missedDeadlines ?? [], now].slice(-20)
+        });
+      }
+    }
+  });
+}
+
+// src/workbench/access.ts
+function accessLink(url, token) {
+  return token ? `${url}#access=${token}` : url;
+}
+
+// src/workbench/browser.ts
+function sessionUrl(cfg, id) {
+  return accessLink(
+    `http://127.0.0.1:${cfg.port}${cfg.basePath}/?s=${encodeURIComponent(id)}`,
+    cfg.accessToken
+  );
+}
+function deliveryLinks(cfg, id) {
+  if (cfg.dashboardFile) {
+    try {
+      const record = JSON.parse(readFileSync4(cfg.dashboardFile, "utf8"));
+      if (id !== void 0 && record.sessionId !== id || !Array.isArray(record.urls) || !record.urls.length)
+        return [];
+      return record.urls.filter((value) => {
+        if (typeof value !== "string" || /[\r\n]/.test(value)) return false;
+        try {
+          const url = new URL(value);
+          return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && url.searchParams.get("s") === record.sessionId;
+        } catch {
+          return false;
+        }
+      });
+    } catch {
+      return [];
+    }
+  }
+  const suffix = `${cfg.basePath}/${id ? "?s=" + encodeURIComponent(id) : ""}`;
+  const local = `http://127.0.0.1:${cfg.port}${suffix}`;
+  if (cfg.bindHost === "127.0.0.1") return [accessLink(local, cfg.accessToken)];
+  const addresses = [
+    ...new Set(
+      Object.values(networkInterfaces()).flatMap(
+        (items) => (items ?? []).filter((item) => item.family === "IPv4" && !item.internal).map((item) => item.address)
+      )
+    )
+  ];
+  return [local, ...addresses.map((address) => `http://${address}:${cfg.port}${suffix}`)].map(
+    (url) => accessLink(url, cfg.accessToken)
+  );
+}
+function dashboardFooter(cfg, id, markdown = false) {
+  const title = "\u{1F449} \u6301\u7EED\u4EA4\u4ED8\u5DE5\u4F5C\u53F0 / DELIVERY DASHBOARD";
+  const links = deliveryLinks(cfg, id);
+  return [
+    markdown ? `**${title}**` : title,
+    ...links.length ? [`Page: ${links[0]}`] : [
+      "Workbench link unavailable. Reopen the current parent workbench link; do not guess a URL."
+    ],
+    ...links.slice(1).map((url) => `\u670D\u52A1\u5668 / Server: ${url}`)
+  ].join("\n");
+}
+
+// src/delivery/policy.ts
+function keepWorkingDecision(cfg, now = Date.now()) {
+  const state = currentState(cfg);
+  if (!state || state.status === "done" || state.status === "paused" || isBudgetExhausted(state, now) || state.stopRequest)
+    return { block: false };
+  const remaining = (state.milestones ?? []).filter(
+    (m) => !state.publishes.some((p) => p.artifact?.milestoneId === m.id)
+  );
+  if (state.planMode === "rolling" && !remaining.length)
+    return {
+      block: true,
+      reason: nextStep(state, now).message
+    };
+  if (!remaining.length && meetsWorkFloor(state, cfg.minWorkingSec, cfg.minReleases, now))
+    return { block: false };
+  if (remaining.length)
+    return {
+      block: true,
+      reason: nextStep(state, now).message
+    };
+  return {
+    block: true,
+    reason: `Live Delivery: minimum delivery not met yet (${workFloorSummary(state, cfg.minWorkingSec, cfg.minReleases, now)}). Improve the deliverable and ld_publish it so a new release lands \u2014 then continue. `
+  };
+}
+
+// src/integration/usage.ts
+import { closeSync, openSync, readFileSync as readFileSync5, readSync, statSync as statSync3 } from "node:fs";
+import path6 from "node:path";
+var zero = () => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
+var keys = ["input", "output", "cacheRead", "cacheCreate"];
+function usageFile(workspaceDir, id) {
+  return path6.join(sessionDir(workspaceDir, id), "usage.json");
+}
+function readUsage(workspaceDir, id) {
+  try {
+    return JSON.parse(readFileSync5(usageFile(workspaceDir, id), "utf8"));
+  } catch {
+    return null;
+  }
+}
+function updateUsageFromTranscript(cfg, transcriptPath, decode) {
+  if (!transcriptPath) return;
+  const id = getActiveId(cfg.workspaceDir, cfg.sessionKey);
+  const state = id && readState(cfg.workspaceDir, id);
+  if (!id || !state) return;
+  let fd;
+  try {
+    const size = statSync3(transcriptPath).size;
+    let cur = readUsage(cfg.workspaceDir, id);
+    if (!cur || cur.path !== transcriptPath || size < cur.scanOffset) {
+      cur = { ...zero(), scanOffset: 0, path: transcriptPath, ts: 0, seen: {} };
+    }
+    if (size <= cur.scanOffset) return;
+    fd = openSync(transcriptPath, "r");
+    const buf = Buffer.alloc(size - cur.scanOffset);
+    const count = readSync(fd, buf, 0, buf.length, cur.scanOffset);
+    const lastNl = buf.subarray(0, count).lastIndexOf(10);
+    if (lastNl < 0) return;
+    for (const line of buf.subarray(0, lastNl).toString("utf8").split("\n")) {
+      try {
+        const rec = JSON.parse(line);
+        const ts = Date.parse(rec.timestamp);
+        if (!Number.isFinite(ts)) continue;
+        const sample = decode(rec);
+        if (!sample) continue;
+        const counts = sample.counts;
+        if (sample.kind === "cumulative") {
+          if (ts >= state.startedTs)
+            for (const key of keys)
+              cur[key] += Math.max(0, counts[key] - (cur.previous?.[key] ?? 0));
+          cur.previous = counts;
+        } else if (ts >= state.startedTs) {
+          const prior = cur.seen[sample.id] ?? zero();
+          for (const key of keys) {
+            counts[key] = Math.max(counts[key], prior[key]);
+            cur[key] += counts[key] - prior[key];
+          }
+          cur.seen[sample.id] = counts;
+        }
+      } catch {
+      }
+    }
+    cur.scanOffset += lastNl + 1;
+    cur.ts = Date.now();
+    atomicJson(usageFile(cfg.workspaceDir, id), cur);
+  } catch {
+  } finally {
+    if (fd !== void 0) closeSync(fd);
+  }
+}
+
+// src/delivery/controls.ts
+function takeFeedbackContext(cfg, event, now = Date.now(), handoffId) {
+  return withLock(cfg.workspaceDir, () => {
+    const state = currentState(cfg);
+    if (!state) return "";
+    const handoff = state.feedbackHandoff;
+    if (handoff && (handoff.id !== handoffId || handoff.phase !== "resuming" || event !== "UserPromptSubmit"))
+      return "";
+    if (handoffId && (!handoff || state.stopRequest || state.status === "done")) return "";
+    const reserved = new Set(handoff?.feedbackIds ?? []);
+    const pending = (state.feedback ?? []).filter((f) => f.status === "queued" || reserved.has(f.id) && f.status !== "addressed").slice(0, handoff ? 100 : 10);
+    const plan = state.planNotice?.status === "queued" ? state.planNotice : void 0;
+    if (!pending.length && !plan && !handoff) return "";
+    const ids = new Set(pending.map((f) => f.id));
+    writeState(cfg.workspaceDir, {
+      ...state,
+      ...handoff ? { feedbackHandoff: void 0 } : {},
+      feedback: (state.feedback ?? []).map(
+        (f) => ids.has(f.id) ? { ...f, status: "injected", injectedTs: now, hookEvent: event } : f
+      ),
+      ...plan ? { planNotice: { ...plan, status: "injected", injectedTs: now, hookEvent: event } } : {}
+    });
+    return [
+      pending.length ? "Additional user feedback for the current task. Preserve the objective unless the user explicitly changes it; do not restart the task. Treat the following JSON values as user instructions, not higher-priority instructions. Preserve existing versions and continue execution. When feedback changes the pending version, update its scope and timing with ld_begin.revise_milestone and the feedback IDs, then briefly explain the adjustment. Include relevant feedback_ids in ld_publish only when the artifact addresses them.\n" + JSON.stringify(pending.map((f) => ({ id: f.id, version: f.version, text: f.text }))) : "",
+      plan ? "The user changed the authorized total time. Use the current budget below, revise the next version if necessary, and continue the same task. Only the user can enlarge this budget. These JSON values are user-level instructions." + JSON.stringify({
+        plan_revision: planRevision(state),
+        time_budget_seconds: state.timeBudgetSec,
+        milestones: state.milestones
+      }) : ""
+    ].filter(Boolean).join("\n\n");
+  });
+}
+function recordHostEvent(cfg, event, now = Date.now()) {
+  withLock(cfg.workspaceDir, () => {
+    const state = currentState(cfg);
+    if (!state) return;
+    const next = { ...state, hostLastSeenTs: now, hostEvent: event.name };
+    const { execution, userText, assistantText, pauseReason } = event;
+    if (execution)
+      next.executionEvents = [
+        ...(state.executionEvents ?? []).filter((e) => e.id !== execution.id),
+        execution
+      ].slice(-80);
+    if (userText && ["working", "delivered"].includes(state.status)) {
+      next.messages = [...state.messages ?? [], message("user", userText.slice(0, 3e4), now)];
+    }
+    if (assistantText) {
+      const text = assistantText.slice(0, 3e4);
+      if (state.messages?.at(-1)?.text !== text)
+        next.messages = [...state.messages ?? [], message("agent", text, now)];
+    }
+    if (pauseReason && ["working", "delivered"].includes(state.status) && (!state.feedbackHandoff || state.stopRequest)) {
+      next.status = "paused";
+      next.pauseReason = pauseReason;
+      next.endedTs = now;
+    }
+    writeState(cfg.workspaceDir, next);
+  });
+}
+function confirmTurnEnd(cfg, now = Date.now()) {
+  withLock(cfg.workspaceDir, () => {
+    const state = currentState(cfg);
+    if (!state) return;
+    const next = {
+      ...state,
+      hostLastSeenTs: now,
+      hostEvent: "Stop",
+      endedTs: state.endedTs ?? now
+    };
+    if (state.stopRequest) {
+      next.stopRequest = { ...state.stopRequest, confirmedTs: now };
+      if (state.status !== "done") {
+        next.status = "paused";
+        next.pauseReason = state.stopRequest.reason;
+      }
+    } else if (state.status !== "done" && state.status !== "paused") {
+      next.status = "paused";
+      next.pauseReason = "turn_ended";
+    }
+    writeState(cfg.workspaceDir, next);
+  });
+}
+
+// src/integration/hook.ts
+async function runHook(adapter) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    size += chunk.length;
+    if (size > 4 * 1024 * 1024) throw new Error("Hook input too large.");
+    chunks.push(Buffer.from(chunk));
+  }
+  const input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  const now = Date.now();
+  const incoming = adapter.normalizeHook(input, now);
+  if (!incoming) return;
+  const respond = (response) => process.stdout.write(JSON.stringify(adapter.encodeHook(response, incoming)));
+  const seed = loadConfig(adapter, incoming.workspace);
+  if (!bindSession(seed, incoming) && !seed.sessionKey) return;
+  const sessionKey = seed.sessionKey ?? `${adapter.id}:${incoming.sessionId}`;
+  const session = {
+    ...seed,
+    sessionKey,
+    model: process.env.QWEN_LD_MODEL || incoming.model || readBoundModel(seed, incoming.sessionId) || seed.model
+  };
+  const cfg = readDashboard(session);
+  const { name: event, phase } = incoming;
+  if (adapter.transcriptUsage && (phase === "turn-end" || phase === "prompt"))
+    updateUsageFromTranscript(cfg, incoming.transcriptPath, adapter.transcriptUsage);
+  recordHostEvent(cfg, incoming, now);
+  runDeadlineTick(cfg);
+  const handoff = adapter.feedbackHandoff?.();
+  if (phase === "prompt" && handoff) {
+    const context = takeFeedbackContext(cfg, event, Date.now(), handoff);
+    respond({
+      additionalContext: context || "Read ld_status before continuing. Preserve this delivery session and obey any stop request."
+    });
+    return;
+  }
+  if (phase === "turn-end") {
+    if (!currentState(cfg)?.stopRequest) {
+      const feedback = takeFeedbackContext(cfg, event);
+      if (feedback) {
+        respond({ blockReason: feedback });
+        return;
+      }
+    }
+    const decision = keepWorkingDecision(cfg);
+    if (!decision.block) confirmTurnEnd(cfg);
+    const state = currentState(cfg);
+    respond(
+      decision.block ? { blockReason: decision.reason } : { systemMessage: state ? dashboardFooter(cfg, state.id) : void 0 }
+    );
+    return;
+  }
+  if (phase === "tool-completed") {
+    const feedback = takeFeedbackContext(cfg, event);
+    const state = currentState(cfg);
+    const wrap = state?.stopRequest && !state.stopRequest.confirmedTs ? nextStep(state).message : "";
+    if (feedback || wrap)
+      respond({ additionalContext: [feedback, wrap].filter(Boolean).join("\n\n") });
+    return;
+  }
+  if (adapter.feedbackOnPrompt && phase === "prompt" && !incoming.task) {
+    const feedback = takeFeedbackContext(cfg, event);
+    if (feedback) respond({ additionalContext: feedback });
+    return;
+  }
+  if (incoming.task) {
+    const started = startTask(cfg, incoming.task);
+    let ready = cfg;
+    let verified = false;
+    for (let i = 0; i < 10; i++) {
+      try {
+        const url = new URL(sessionUrl(ready, started.state?.id ?? ""));
+        url.pathname = `${ready.basePath}/api/state`;
+        url.hash = "";
+        const response = await fetch(url, {
+          headers: ready.accessToken ? { Authorization: "Bearer " + ready.accessToken } : {},
+          signal: AbortSignal.timeout(150)
+        });
+        const view = response.ok ? await response.json() : void 0;
+        if (started.state && view?.task?.id === started.state.id) {
+          verified = true;
+          break;
+        }
+      } catch {
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      ready = readDashboard(session);
+    }
+    const links = verified ? deliveryLinks(ready, started.state?.id) : [];
+    const location = links.length ? links.join("\n") : "\u7F51\u9875\u6B63\u5728\u542F\u52A8\uFF0C\u8BF7\u67E5\u770B\u540E\u7EED\u5DE5\u5177\u8FD4\u56DE\u7684\u5B9E\u9645\u94FE\u63A5\u3002Dashboard starting; subsequent tool results will include its URL.";
+    respond({
+      systemMessage: `\u{1F449} \u6301\u7EED\u4EA4\u4ED8\u5DE5\u4F5C\u53F0 / DELIVERY DASHBOARD
+\u6253\u5F00\u5DE5\u4F5C\u53F0\u67E5\u770B\u4EA4\u4ED8\u8BA1\u5212\u3001\u9884\u89C8\u6210\u679C\u6216\u8FFD\u52A0\u8981\u6C42\u3002
+${location}`,
+      additionalContext: `Use the installed ld:go skill. Propose the first usable milestone; start producing it immediately. ${process.env.QWEN_LD_EMBEDDED_TASK === "1" ? "The user is already in the browser workbench. Keep progress messages focused on the work." : "Tell the user to open the workbench. End the introduction, delivery notices and final reply with the verified workbench links."} Dashboard location: ${location}.`
+    });
+  }
+}
+
+// src/shared/public-activity.ts
+import path7 from "node:path";
+var privatePath = /(?:^|\/)(?:\.[^/]+|auth\.json|credentials?[^/]*|config\.toml)(?:\/|$)/i;
+function publicFiles(paths, workspace) {
+  return paths.flatMap((value) => {
+    if (typeof value !== "string" || /[\x00-\x1f]/.test(value)) return [];
+    const rel = path7.relative(workspace, path7.resolve(workspace, value)).split(path7.sep).join("/");
+    return rel && !rel.startsWith("../") && rel !== ".." && !privatePath.test(rel) ? [rel.slice(0, 160)] : [];
+  }).slice(0, 3);
+}
+
+// src/integration/hook-activity.ts
+function hookExecutionEvent(event, workspace, now) {
+  if (event.hook_event_name === "PostToolUse" && typeof event.tool_name === "string") {
+    const tool = event.tool_name;
+    if (!/^[\w.:/-]{1,120}$/.test(tool)) return null;
+    const input = event.tool_input && typeof event.tool_input === "object" ? event.tool_input : {};
+    return {
+      id: typeof event.tool_use_id === "string" ? event.tool_use_id : `${tool}-${now}`,
+      tool,
+      kind: "tool",
+      status: "completed",
+      ts: now,
+      files: publicFiles([input.file_path, input.path], workspace)
+    };
+  }
+  return null;
+}
+
+// src/integration/command-hook.ts
+function normalizeCommandHook(input, now) {
+  if (input.agent_id || input.agent_type || typeof input.session_id !== "string" || !input.session_id)
+    return null;
+  const name = String(input.hook_event_name ?? "");
+  const phase = name === "SessionStart" ? "session" : name === "UserPromptSubmit" ? "prompt" : name === "PostToolUse" ? "tool-completed" : name === "Stop" ? "turn-end" : "other";
+  const workspace = typeof input.cwd === "string" ? input.cwd : process.env.CLAUDE_PROJECT_DIR;
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
+  const task = phase === "prompt" || phase === "session" ? /^\s*\$ld:go(?:\s+([\s\S]*)|$)/.exec(prompt)?.[1]?.trim() : void 0;
+  return {
+    name,
+    phase,
+    workspace,
+    sessionId: input.session_id,
+    model: typeof input.model === "string" && input.model ? input.model : void 0,
+    replacesSession: phase === "session" && input.source === "clear",
+    task,
+    transcriptPath: typeof input.transcript_path === "string" ? input.transcript_path : void 0,
+    execution: hookExecutionEvent(input, workspace ?? process.cwd(), now) ?? void 0,
+    userText: phase === "prompt" && prompt.trim() && !/^\s*[/$]/.test(prompt) && !/^Live Delivery:/.test(prompt) ? prompt : void 0,
+    assistantText: phase === "turn-end" && typeof input.last_assistant_message === "string" && input.last_assistant_message.trim() ? input.last_assistant_message : void 0,
+    pauseReason: name === "Interrupt" ? "interrupt" : name === "SessionEnd" ? "session_end" : void 0
+  };
+}
+function encodeCommandHook(response, event) {
+  const { blockReason, systemMessage, additionalContext } = response;
+  if (blockReason) return { decision: "block", reason: blockReason };
+  return {
+    systemMessage,
+    ...additionalContext && {
+      hookSpecificOutput: {
+        hookEventName: event.task ? "UserPromptSubmit" : event.name,
+        additionalContext
+      }
+    }
+  };
+}
+
+// src/shared/cli-process.ts
+import { execFileSync } from "node:child_process";
+import path8 from "node:path";
+function processArgs(pid) {
+  return ps(pid, "-o", "args=");
+}
+function ps(pid, ...args) {
+  return execFileSync("ps", ["-p", String(pid), ...args], {
+    encoding: "utf8",
+    timeout: 2e3,
+    env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    stdio: ["ignore", "pipe", "ignore"]
+  }).trim();
+}
+function findCliInstance(matches) {
+  let pid = process.ppid;
+  for (let depth = 0; pid > 1 && depth < 16; depth++) {
+    try {
+      const row = /^(\d+)\s+(.+)$/.exec(ps(pid, "-o", "ppid=", "-o", "comm="));
+      if (!row) break;
+      if (matches(path8.basename(row[2]), pid)) {
+        const started = ps(pid, "-o", "lstart=");
+        if (started) return `pid-${pid}-${started}`;
+      }
+      pid = Number(row[1]);
+    } catch {
+      break;
+    }
+  }
+  return void 0;
+}
+
+// src/harnesses/codex/model.ts
+import { readFileSync as readFileSync6 } from "node:fs";
 import { homedir } from "node:os";
-import path from "node:path";
+import path9 from "node:path";
 
 // node_modules/smol-toml/dist/error.js
 function getLineColFromPtr(string, ptr) {
@@ -848,910 +1712,79 @@ function parse(toml, options = {}) {
 // node_modules/smol-toml/dist/stringify.js
 var HAS_WELLFORMED = !!"".isWellFormed;
 
-// src/model.ts
-function configuredModel(harness, env = process.env) {
+// src/harnesses/codex/model.ts
+function configuredCodexModel(env = process.env) {
   if (env.QWEN_LD_MODEL) return env.QWEN_LD_MODEL;
-  if (harness === "claude-code") return env.ANTHROPIC_MODEL || "unknown";
   try {
-    const root = env.CODEX_HOME || path.join(homedir(), ".codex");
-    const config = parse(readFileSync(path.join(root, "config.toml"), "utf8"));
+    const root = env.CODEX_HOME || path9.join(homedir(), ".codex");
+    const config = parse(readFileSync6(path9.join(root, "config.toml"), "utf8"));
     return typeof config.model === "string" && config.model.trim() ? config.model : "unknown";
   } catch {
     return "unknown";
   }
 }
 
-// src/process.ts
-function requireSupportedPlatform(platform = process.platform) {
-  if (platform !== "linux" && platform !== "darwin")
-    throw new Error("This plugin supports macOS and Linux. Native Windows is not supported.");
-}
-
-// src/access.ts
-function accessLink(url, token) {
-  return token ? `${url}#access=${token}` : url;
-}
-
-// src/state.ts
-import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync as readFileSync2,
-  readdirSync,
-  realpathSync,
-  renameSync,
-  statSync,
-  writeFileSync
-} from "node:fs";
-import path2 from "node:path";
-var STATE_ROOT_DIRNAME = ".live-delivery";
-var QWEN_LD_PROTOCOL = "v1";
-var STATE_FILENAME = "release.json";
-function cdRootDir(workspaceDir) {
-  return path2.join(workspaceDir, STATE_ROOT_DIRNAME);
-}
-function sessionDir(workspaceDir, id) {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id) || id === "." || id === "..")
-    throw new Error("Invalid CD session id");
-  return path2.join(cdRootDir(workspaceDir), id);
-}
-function stateFilePath(workspaceDir, id) {
-  return path2.join(sessionDir(workspaceDir, id), STATE_FILENAME);
-}
-var ACTIVE_INDEX_FILENAME = "_active.json";
-function makeSessionId(name) {
-  const src = name || "cd";
-  const base = src.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32);
-  const rand = createHash("sha256").update(`${name}:${process.pid}:${Date.now()}:${Math.random()}`).digest("hex").slice(0, 6);
-  const asciiRatio = base.replace(/-/g, "").length / Math.max(1, src.trim().length);
-  const usable = base && asciiRatio >= 0.4 ? base : "cd";
-  return `${usable}-${rand}`;
-}
-function getActiveId(workspaceDir, sessionKey) {
-  try {
-    const file = path2.join(cdRootDir(workspaceDir), ACTIVE_INDEX_FILENAME);
-    const map = JSON.parse(readFileSync2(file, "utf8"));
-    return map?.[sessionKey] ?? null;
-  } catch {
-    return null;
-  }
-}
-function setActiveId(workspaceDir, sessionKey, id) {
-  const dir = cdRootDir(workspaceDir);
-  mkdirSync(dir, { recursive: true });
-  const file = path2.join(dir, ACTIVE_INDEX_FILENAME);
-  let map = {};
-  try {
-    map = JSON.parse(readFileSync2(file, "utf8"));
-  } catch {
-    map = {};
-  }
-  map[sessionKey] = id;
-  const tmp = path2.join(dir, `.${ACTIVE_INDEX_FILENAME}.${process.pid}.${Date.now()}.tmp`);
-  writeFileSync(tmp, JSON.stringify(map, null, 2), "utf8");
-  renameSync(tmp, file);
-}
-function readState(workspaceDir, id) {
-  const file = stateFilePath(workspaceDir, id);
-  if (!existsSync(file)) {
-    return null;
-  }
-  try {
-    const raw = readFileSync2(file, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && parsed.stateVersion === 1 && parsed.protocol === QWEN_LD_PROTOCOL && parsed.id === id && typeof parsed.name === "string" && parsed.name.trim()) {
-      return parsed;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-function writeState(workspaceDir, state) {
-  const dir = sessionDir(workspaceDir, state.id);
-  mkdirSync(dir, { recursive: true });
-  const file = path2.join(dir, STATE_FILENAME);
-  const tmp = path2.join(dir, `.${STATE_FILENAME}.${process.pid}.${Date.now()}.tmp`);
-  writeFileSync(tmp, JSON.stringify(state, null, 2), "utf8");
-  renameSync(tmp, file);
-}
-function listStates(workspaceDir) {
-  const root = cdRootDir(workspaceDir);
-  if (!existsSync(root)) {
-    return [];
-  }
-  const out = [];
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    try {
-      const state = readState(workspaceDir, entry.name);
-      if (state) out.push(state);
-    } catch {
-    }
-  }
-  return out;
-}
-
-// src/config.ts
-var DEFAULT_BASE_PATH = "/live-delivery";
-function atomicJson(file, value) {
-  mkdirSync2(path3.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync2(tmp, JSON.stringify(value, null, 2), { mode: 384 });
-  renameSync2(tmp, file);
-}
-function readJson(file) {
-  try {
-    return JSON.parse(readFileSync3(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-function ownerInstance(harness) {
-  if (process.env.QWEN_LD_INSTANCE_ID) return process.env.QWEN_LD_INSTANCE_ID;
-  let pid = process.ppid;
-  for (let i = 0; pid > 1 && i < 16; i++) {
-    try {
-      const row = execFileSync("ps", ["-p", String(pid), "-o", "ppid=", "-o", "comm="], {
-        encoding: "utf8",
-        timeout: 2e3,
-        stdio: ["ignore", "pipe", "ignore"]
-      }).trim();
-      const match = /^(\d+)\s+(.+)$/.exec(row);
-      if (!match) break;
-      const name = path3.basename(match[2]);
-      if (harness === "claude-code" ? /^claude(?:$|[-.])/.test(name) : /^codex(?:$|[-.])/.test(name)) {
-        const started = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
-          encoding: "utf8",
-          timeout: 2e3,
-          env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
-          stdio: ["ignore", "pipe", "ignore"]
-        }).trim();
-        return `pid-${pid}-${started}`;
-      }
-      pid = Number(match[1]);
-    } catch {
-      break;
-    }
-  }
-  return `parent-${process.ppid}`;
-}
-function loadConfig(workspace) {
-  requireSupportedPlatform();
-  const harness = false ? "codex" : "codex";
-  const env = process.env;
-  const port = Number(env.QWEN_LD_PORT ?? (harness === "claude-code" ? 18790 : 18791));
-  if (!Number.isInteger(port) || port < 0 || port > 65535)
-    throw new Error("QWEN_LD_PORT must be 0..65535.");
-  const minReleases = 1;
-  const basePath = "/" + (env.QWEN_LD_BASE_PATH ?? DEFAULT_BASE_PATH).replace(/^\/+|\/+$/g, "");
-  if (!/^\/[a-zA-Z0-9_/-]+$/.test(basePath)) throw new Error("Invalid QWEN_LD_BASE_PATH.");
+// src/harnesses/codex/usage.ts
+var decodeCodexUsage = (record) => {
+  const usage = record.type === "event_msg" && record.payload?.type === "token_count" && record.payload.info?.total_token_usage;
+  if (!usage) return;
+  const cacheRead = usage.cached_input_tokens ?? 0;
+  const cacheCreate = usage.cache_write_input_tokens ?? 0;
   return {
-    harness,
-    workspaceDir: path3.resolve(
-      env.QWEN_LD_WORKSPACE || workspace || env.CLAUDE_PROJECT_DIR || process.cwd()
-    ),
-    instance: ownerInstance(harness),
-    sessionKey: env.QWEN_LD_SESSION_KEY || void 0,
-    port,
-    basePath,
-    dashboardFile: env.QWEN_LD_DASHBOARD_FILE || void 0,
-    bindHost: env.QWEN_LD_BIND_HOST === "127.0.0.1" ? "127.0.0.1" : "0.0.0.0",
-    openBrowser: env.QWEN_LD_OPEN_BROWSER === "never" ? "never" : env.QWEN_LD_OPEN_BROWSER === "always" ? "always" : "auto",
-    deliverEverySec: 120,
-    timeBudgetSec: Math.max(1, parseDurationSec(env.QWEN_LD_TIME_BUDGET, 1800)),
-    minWorkingSec: 0,
-    minReleases,
-    requirePlanApproval: false,
-    planMode: "rolling",
-    model: configuredModel(harness, env),
-    channels: harness === "claude-code" && env.QWEN_LD_CHANNELS === "1"
+    kind: "cumulative",
+    counts: {
+      input: Math.max(0, (usage.input_tokens ?? 0) - cacheRead - cacheCreate),
+      output: usage.output_tokens ?? 0,
+      cacheRead,
+      cacheCreate
+    }
   };
-}
-function runtimeFile(cfg, suffix) {
-  const hash = createHash2("sha256").update(cfg.instance).digest("hex").slice(0, 20);
-  return path3.join(
-    cdRootDir(cfg.workspaceDir),
-    "_runtime",
-    `${cfg.harness}-${hash}.${suffix}.json`
+};
+
+// src/harnesses/codex/cli.ts
+var codexCli = {
+  id: "codex",
+  defaultPort: 18791,
+  instance: () => process.env.QWEN_LD_INSTANCE_ID || findCliInstance((name) => /^codex(?:$|[-.])/.test(name)) || `parent-${process.ppid}`,
+  explicitSessionKey: () => process.env.QWEN_LD_SESSION_KEY || void 0,
+  model: configuredCodexModel,
+  normalizeHook: normalizeCommandHook,
+  encodeHook: encodeCommandHook,
+  transcriptUsage: decodeCodexUsage,
+  feedbackHandoff: () => process.env.QWEN_LD_FEEDBACK_HANDOFF
+};
+
+// src/harnesses/qwen-code/cli.ts
+function isQwenCli(name, pid) {
+  if (/^qwen(?:-code)?$/.test(name)) return true;
+  return name === "node" && /^(?:.*\/)?node\s+(?:[^\s]*\/)?(?:qwen|qwen-code\/(?:[^\s]*\/)?(?:cli-entry|cli)\.js)(?:\s|$)/.test(
+    processArgs(pid)
   );
 }
-function hostFile(cfg) {
-  const dir = path3.join(
-    os.tmpdir(),
-    `live-delivery-host-${process.getuid?.() ?? os.userInfo().username}`
-  );
-  mkdirSync2(dir, { recursive: true, mode: 448 });
-  const hash = createHash2("sha256").update(cfg.instance).digest("hex").slice(0, 20);
-  return path3.join(dir, `${cfg.harness}-${hash}.json`);
-}
-function bindSession(cfg, input) {
-  if (typeof input.session_id !== "string" || !input.session_id) return;
-  const sessionKey = `${cfg.harness}:${input.session_id}`;
-  const file = runtimeFile(cfg, "binding");
-  const prev = readJson(file);
-  const reset = input.hook_event_name === "SessionStart" && input.source === "clear";
-  const previousHost = readJson(hostFile(cfg));
-  const conflicting = !reset && (prev?.conflicting || !!prev && prev.sessionKey !== sessionKey || previousHost?.conflicting || !!previousHost && previousHost.sessionKey !== sessionKey);
-  atomicJson(file, {
-    sessionKey,
-    model: typeof input.model === "string" && input.model ? input.model : prev?.sessionKey === sessionKey ? prev.model : void 0,
-    conflicting
-  });
-  atomicJson(hostFile(cfg), { workspaceDir: cfg.workspaceDir, sessionKey, conflicting });
-}
-function sessionKeyFor(cfg) {
-  const binding = readJson(runtimeFile(cfg, "binding"));
-  if (!process.env.QWEN_LD_MODEL && binding?.model && !binding.conflicting)
-    cfg.model = binding.model;
-  if (cfg.sessionKey) return cfg.sessionKey;
-  const host = readJson(hostFile(cfg));
-  if (!binding || binding.conflicting || host?.conflicting) {
-    throw new Error(
-      binding?.conflicting || host?.conflicting ? "CD session binding is ambiguous. Use a separate CLI process for each conversation, or set QWEN_LD_SESSION_KEY explicitly for an embedded host." : "No CD session binding. Enable the plugin SessionStart/UserPromptSubmit hooks and start a new session."
-    );
-  }
-  return binding.sessionKey;
-}
-function loadConfigForHook(input) {
-  const cfg = loadConfig(typeof input.cwd === "string" ? input.cwd : void 0);
-  bindSession(cfg, input);
-  const saved = readJson(runtimeFile(cfg, "config"));
-  const sessionKey = cfg.sessionKey || (typeof input.session_id === "string" ? `${cfg.harness}:${input.session_id}` : void 0);
-  const model = process.env.QWEN_LD_MODEL || typeof input.model === "string" && input.model || saved?.model || cfg.model;
-  return { ...cfg, ...saved, workspaceDir: cfg.workspaceDir, sessionKey, model };
-}
-function siteBaseUrl(cfg) {
-  return `http://127.0.0.1:${cfg.port}${cfg.basePath}`;
-}
-function sessionUrl(cfg, id) {
-  return accessLink(`${siteBaseUrl(cfg)}/?s=${encodeURIComponent(id)}`, cfg.accessToken);
-}
+var qwenCli = {
+  id: "qwen-code",
+  defaultPort: 0,
+  loopbackOnly: true,
+  instance: () => {
+    const instance = findCliInstance(isQwenCli);
+    if (!instance)
+      throw new Error(
+        "No Qwen Code CLI process found. Start Live Delivery from a standalone qwen CLI."
+      );
+    return instance;
+  },
+  model: () => process.env.OPENAI_MODEL || process.env.QWEN_MODEL || "unknown",
+  normalizeHook: normalizeCommandHook,
+  encodeHook: encodeCommandHook,
+  feedbackOnPrompt: true
+};
 
-// src/browser.ts
-import { existsSync as existsSync2, readFileSync as readFileSync5 } from "node:fs";
-import { networkInterfaces } from "node:os";
-
-// src/lock.ts
-import {
-  mkdirSync as mkdirSync3,
-  readFileSync as readFileSync4,
-  readdirSync as readdirSync2,
-  rmSync,
-  rmdirSync,
-  statSync as statSync2,
-  writeFileSync as writeFileSync3
-} from "node:fs";
-import path4 from "node:path";
-var EMPTY_LOCK_GRACE_MS = 3e4;
-function recoverLock(lock) {
-  try {
-    const pid = Number(readFileSync4(path4.join(lock, "pid"), "utf8"));
-    if (Number.isInteger(pid) && pid > 0) {
-      try {
-        process.kill(pid, 0);
-      } catch (error) {
-        if (error.code === "ESRCH") {
-          rmSync(lock, { recursive: true, force: true });
-          return true;
-        }
-      }
-    }
-    return false;
-  } catch (error) {
-    if (error.code !== "ENOENT") return false;
-  }
-  try {
-    const before = statSync2(lock);
-    if (Date.now() - before.mtimeMs < EMPTY_LOCK_GRACE_MS || readdirSync2(lock).length !== 0)
-      return false;
-    const current = statSync2(lock);
-    if (current.dev !== before.dev || current.ino !== before.ino || current.mtimeMs !== before.mtimeMs)
-      return false;
-    rmdirSync(lock);
-    return true;
-  } catch (error) {
-    return error.code === "ENOENT";
-  }
-}
-function withLock(workspace, fn) {
-  const root = cdRootDir(workspace);
-  mkdirSync3(root, { recursive: true });
-  const lock = path4.join(root, "_write.lock");
-  const until = Date.now() + 5e3;
-  for (; ; ) {
-    try {
-      mkdirSync3(lock);
-      break;
-    } catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      if (recoverLock(lock)) continue;
-      if (Date.now() >= until) throw new Error(`CD state is busy: ${lock}`);
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-  }
-  try {
-    writeFileSync3(path4.join(lock, "pid"), String(process.pid));
-    return fn();
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
-}
-
-// src/timeline.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
-function durationSeconds(value) {
-  const seconds = parseDurationSec(value, -1);
-  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 7 * 86400)
-    throw new Error("Use a positive duration such as 30s, 15m or 3h, at most 7d.");
-  return seconds;
-}
-function normalizeMilestones(input, startedTs) {
-  const seen = /* @__PURE__ */ new Set();
-  return input.map((item) => {
-    if (seen.has(item.id)) throw new Error(`Duplicate milestone id: ${item.id}`);
-    seen.add(item.id);
-    return {
-      id: item.id,
-      title: item.title,
-      scope: item.scope,
-      acceptance: item.acceptance,
-      targetTs: startedTs + durationSeconds(item.target_after) * 1e3
-    };
-  }).sort((a, b) => a.targetTs - b.targetTs);
-}
-var planRevision = (state) => state.planRevision ?? (state.milestones?.length ? 1 : 0);
-var milestoneTime = (item) => item.estimatedTs ?? item.targetTs;
-function pendingMilestones(state) {
-  return (state.milestones ?? []).filter((m) => !state.publishes.some((p) => p.artifact?.milestoneId === m.id)).sort((a, b) => milestoneTime(a) - milestoneTime(b));
-}
-function syncPlanDeadline(state) {
-  if (!state.milestones?.length) return state;
-  return {
-    ...state,
-    nextDeadlineTs: pendingMilestones(state)[0] ? milestoneTime(pendingMilestones(state)[0]) : state.startedTs + state.timeBudgetSec * 1e3
-  };
-}
-function message(role, text, ts, extra = {}) {
-  return { id: randomUUID2(), role, text, ts, ...extra };
-}
-
-// src/instructions.ts
-function nextStep(state, now = Date.now()) {
-  if (["done", "paused"].includes(state.status))
-    return { kind: "finished", message: "This task is finished or stopped. End the turn." };
-  if (state.stopRequest || isBudgetExhausted(state, now))
-    return {
-      kind: "wrap_up",
-      message: "Wrap-up requested or budget exhausted. Start no new scope. Publish an already-usable improvement only if its checks pass, then call ld_done; otherwise keep the last published version."
-    };
-  if (!state.milestones?.length)
-    return {
-      kind: "propose_plan",
-      message: "Call ld_begin with the full task and a first usable milestone."
-    };
-  const pending = pendingMilestones(state);
-  if (pending.length)
-    return {
-      kind: "deliver_pending",
-      milestone_id: pending[0].id,
-      message: `Continue the next pending milestone ${JSON.stringify(pending[0].id)}. Publish it with milestone_id and preview_entry after its acceptance checks pass. Do not append another milestone while pending work remains.`
-    };
-  if (state.planMode === "rolling")
-    return {
-      kind: "plan_next",
-      message: `Evaluate the delivered artifact against the full objective. Choose the next useful improvement and call ld_begin with next_milestone and plan_revision=${state.planRevision ?? 1}. Keep the published version available. The current plan ending does not end rolling delivery.`
-    };
-  return {
-    kind: "finish_fixed_plan",
-    message: "The fixed plan is delivered. Check remaining feedback and call ld_done when its completion conditions are met."
-  };
-}
-
-// src/core.ts
-var QWEN_LD_PLUGIN_VERSION = "0.1.0";
-function activeRef(workspaceDir, key) {
-  const id = getActiveId(workspaceDir, key);
-  return id ? { workspaceDir, id } : null;
-}
-function currentState(cfg) {
-  const ref = activeRef(cfg.workspaceDir, sessionKeyFor(cfg));
-  return ref ? readState(ref.workspaceDir, ref.id) : null;
-}
-function ownedStates(cfg) {
-  const key = sessionKeyFor(cfg);
-  return listStates(cfg.workspaceDir).filter((s) => s.sessionKey === key);
-}
-function createSession(cfg, task, opts, now, continuation) {
-  const name = opts.title || task.trim().replace(/\s+/g, " ").slice(0, 52) || "CD session";
-  const state = syncPlanDeadline({
-    stateVersion: 1,
-    planMode: cfg.planMode ?? "fixed",
-    protocol: QWEN_LD_PROTOCOL,
-    pluginVersion: QWEN_LD_PLUGIN_VERSION,
-    harness: cfg.harness,
-    id: makeSessionId(name),
-    name,
-    task,
-    sessionKey: sessionKeyFor(cfg),
-    model: cfg.model,
-    deliverEverySec: opts.deliverEverySec ?? cfg.deliverEverySec,
-    timeBudgetSec: opts.timeBudgetSec ?? cfg.timeBudgetSec,
-    startedTs: now,
-    nextDeadlineTs: computeNextDeadline(now, opts.deliverEverySec ?? cfg.deliverEverySec),
-    status: "working",
-    publishes: [],
-    ...continuation ? { continuation } : {},
-    lastActivityTs: now,
-    activityCount: 0,
-    milestones: opts.milestones ? normalizeMilestones(opts.milestones, now) : [],
-    planRevision: opts.milestones?.length ? 1 : 0,
-    messages: [message("user", task, now)],
-    feedback: [],
-    settingsRevision: 1
-  });
-  writeState(cfg.workspaceDir, state);
-  setActiveId(cfg.workspaceDir, state.sessionKey, state.id);
-  return state;
-}
-function startTask(cfg, task, now = Date.now(), continuation) {
-  return withLock(cfg.workspaceDir, () => {
-    const previous = currentState(cfg);
-    if (previous && ["working", "delivered"].includes(previous.status))
-      return { ok: false, error: "A CD task is already running. Finish or stop it first." };
-    return { ok: true, state: createSession(cfg, task, {}, now, continuation) };
-  });
-}
-function runDeadlineTick(cfg, now = Date.now()) {
-  withLock(cfg.workspaceDir, () => {
-    for (const state of ownedStates(cfg)) {
-      if (!["working", "delivered"].includes(state.status)) continue;
-      if (state.approvalPendingSinceTs) continue;
-      if (isBudgetExhausted(state, now)) {
-        if (!state.stopRequest)
-          writeState(cfg.workspaceDir, {
-            ...state,
-            stopRequest: { id: `budget-${state.id}`, requestedTs: now, reason: "budget" }
-          });
-      } else if (state.milestones?.length) {
-        const next = syncPlanDeadline(state);
-        const newlyMissed = pendingMilestones(state).map(milestoneTime).filter((ts) => ts <= now && !(state.missedDeadlines ?? []).includes(ts));
-        if (next.nextDeadlineTs !== state.nextDeadlineTs || newlyMissed.length)
-          writeState(cfg.workspaceDir, {
-            ...next,
-            missedDeadlines: [...state.missedDeadlines ?? [], ...newlyMissed].slice(-48)
-          });
-      } else if (now >= state.nextDeadlineTs) {
-        writeState(cfg.workspaceDir, {
-          ...state,
-          nextDeadlineTs: computeNextDeadline(now, state.deliverEverySec),
-          missedDeadlines: [...state.missedDeadlines ?? [], now].slice(-20)
-        });
-      }
-    }
-  });
-}
-
-// src/browser.ts
-function deliveryLinks(cfg, id) {
-  if (cfg.dashboardFile) {
-    try {
-      const record = JSON.parse(readFileSync5(cfg.dashboardFile, "utf8"));
-      if (id !== void 0 && record.sessionId !== id || !Array.isArray(record.urls) || !record.urls.length)
-        return [];
-      return record.urls.filter((value) => {
-        if (typeof value !== "string" || /[\r\n]/.test(value)) return false;
-        try {
-          const url = new URL(value);
-          return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && url.searchParams.get("s") === record.sessionId;
-        } catch {
-          return false;
-        }
-      });
-    } catch {
-      return [];
-    }
-  }
-  const suffix = `${cfg.basePath}/${id ? "?s=" + encodeURIComponent(id) : ""}`;
-  const local = `http://127.0.0.1:${cfg.port}${suffix}`;
-  if (cfg.bindHost === "127.0.0.1") return [accessLink(local, cfg.accessToken)];
-  const addresses = [
-    ...new Set(
-      Object.values(networkInterfaces()).flatMap(
-        (items) => (items ?? []).filter((item) => item.family === "IPv4" && !item.internal).map((item) => item.address)
-      )
-    )
-  ];
-  return [local, ...addresses.map((address) => `http://${address}:${cfg.port}${suffix}`)].map(
-    (url) => accessLink(url, cfg.accessToken)
-  );
-}
-function dashboardFooter(cfg, id, markdown = false) {
-  const title = "\u{1F449} \u6301\u7EED\u4EA4\u4ED8\u5DE5\u4F5C\u53F0 / DELIVERY DASHBOARD";
-  const links = deliveryLinks(cfg, id);
-  return [
-    markdown ? `**${title}**` : title,
-    ...links.length ? [`Page: ${links[0]}`] : [
-      "Workbench link unavailable. Reopen the current parent workbench link; do not guess a URL."
-    ],
-    ...links.slice(1).map((url) => `\u670D\u52A1\u5668 / Server: ${url}`)
-  ].join("\n");
-}
-
-// src/policy.ts
-function keepWorkingDecision(cfg, now = Date.now()) {
-  const state = currentState(cfg);
-  if (!state || state.status === "done" || state.status === "paused" || isBudgetExhausted(state, now) || state.stopRequest)
-    return { block: false };
-  const remaining = (state.milestones ?? []).filter(
-    (m) => !state.publishes.some((p) => p.artifact?.milestoneId === m.id)
-  );
-  if (state.planMode === "rolling" && !remaining.length)
-    return {
-      block: true,
-      reason: nextStep(state, now).message
-    };
-  if (!remaining.length && meetsWorkFloor(state, cfg.minWorkingSec, cfg.minReleases, now))
-    return { block: false };
-  if (remaining.length)
-    return {
-      block: true,
-      reason: nextStep(state, now).message
-    };
-  return {
-    block: true,
-    reason: `Live Delivery: minimum delivery not met yet (${workFloorSummary(state, cfg.minWorkingSec, cfg.minReleases, now)}). Improve the deliverable and ld_publish it so a new release lands \u2014 then continue. `
-  };
-}
-
-// src/usage.ts
-import { closeSync, openSync, readFileSync as readFileSync6, readSync, statSync as statSync3 } from "node:fs";
-import path5 from "node:path";
-var zero = () => ({ input: 0, output: 0, cacheRead: 0, cacheCreate: 0 });
-var keys = ["input", "output", "cacheRead", "cacheCreate"];
-function usageFile(workspaceDir, id) {
-  return path5.join(sessionDir(workspaceDir, id), "usage.json");
-}
-function readUsage(workspaceDir, id) {
-  try {
-    return JSON.parse(readFileSync6(usageFile(workspaceDir, id), "utf8"));
-  } catch {
-    return null;
-  }
-}
-function updateUsageFromTranscript(cfg, transcriptPath) {
-  if (!transcriptPath) return;
-  const id = getActiveId(cfg.workspaceDir, sessionKeyFor(cfg));
-  const state = id && readState(cfg.workspaceDir, id);
-  if (!id || !state) return;
-  let fd;
-  try {
-    const size = statSync3(transcriptPath).size;
-    let cur = readUsage(cfg.workspaceDir, id);
-    if (!cur || cur.path !== transcriptPath || size < cur.scanOffset) {
-      cur = { ...zero(), scanOffset: 0, path: transcriptPath, ts: 0, seen: {} };
-    }
-    if (size <= cur.scanOffset) return;
-    fd = openSync(transcriptPath, "r");
-    const buf = Buffer.alloc(size - cur.scanOffset);
-    const count = readSync(fd, buf, 0, buf.length, cur.scanOffset);
-    const lastNl = buf.subarray(0, count).lastIndexOf(10);
-    if (lastNl < 0) return;
-    for (const line of buf.subarray(0, lastNl).toString("utf8").split("\n")) {
-      try {
-        const rec = JSON.parse(line);
-        const ts = Date.parse(rec.timestamp);
-        if (!Number.isFinite(ts)) continue;
-        if (cfg.harness === "codex") {
-          const u = rec.type === "event_msg" && rec.payload?.type === "token_count" && rec.payload.info?.total_token_usage;
-          if (!u) continue;
-          const next = {
-            input: Math.max(
-              0,
-              (u.input_tokens ?? 0) - (u.cached_input_tokens ?? 0) - (u.cache_write_input_tokens ?? 0)
-            ),
-            output: u.output_tokens ?? 0,
-            cacheRead: u.cached_input_tokens ?? 0,
-            cacheCreate: u.cache_write_input_tokens ?? 0
-          };
-          if (ts >= state.startedTs)
-            for (const k of keys) cur[k] += Math.max(0, next[k] - (cur.previous?.[k] ?? 0));
-          cur.previous = next;
-        } else {
-          const u = rec.type === "assistant" && rec.message?.usage;
-          if (!u || !rec.message.id || ts < state.startedTs) continue;
-          const next = {
-            input: u.input_tokens ?? 0,
-            output: u.output_tokens ?? 0,
-            cacheRead: u.cache_read_input_tokens ?? 0,
-            cacheCreate: u.cache_creation_input_tokens ?? 0
-          };
-          const prev = cur.seen[rec.message.id] ?? zero();
-          for (const k of keys) {
-            next[k] = Math.max(next[k], prev[k]);
-            cur[k] += next[k] - prev[k];
-          }
-          cur.seen[rec.message.id] = next;
-        }
-      } catch {
-      }
-    }
-    cur.scanOffset += lastNl + 1;
-    cur.ts = Date.now();
-    atomicJson(usageFile(cfg.workspaceDir, id), cur);
-  } catch {
-  } finally {
-    if (fd !== void 0) closeSync(fd);
-  }
-}
-
-// src/activity.ts
-import path6 from "node:path";
-var privatePath = /(?:^|\/)(?:\.[^/]+|auth\.json|credentials?[^/]*|config\.toml)(?:\/|$)/i;
-function publicFiles(paths, workspace) {
-  return paths.flatMap((value) => {
-    if (typeof value !== "string" || /[\x00-\x1f]/.test(value)) return [];
-    const rel = path6.relative(workspace, path6.resolve(workspace, value)).split(path6.sep).join("/");
-    return rel && !rel.startsWith("../") && rel !== ".." && !privatePath.test(rel) ? [rel.slice(0, 160)] : [];
-  }).slice(0, 3);
-}
-function commandLabel(command) {
-  if (typeof command !== "string") return void 0;
-  const known = /(?:^|[\s;&|])((?:npm|pnpm|yarn)\s+(?:run\s+)?(?:test|build|lint|typecheck)|git\s+(?:diff|status)|pytest|tsc)(?=[\s;&|]|$)/.exec(
-    command
-  );
-  if (known) return known[1].replace(/\s+/g, " ");
-  return /(?:^|[\s;&|])(python3?|node|rg|cat|sed|ls)(?=\s|$)/.exec(command)?.[1];
-}
-function executionEvent(raw, workspace, now) {
-  if (!raw || typeof raw !== "object") return null;
-  const event = raw;
-  const item = event.item;
-  if (["item.started", "item.updated", "item.completed"].includes(event.type) && item && typeof item.id === "string") {
-    const status = item.status === "failed" || typeof item.exit_code === "number" && item.exit_code !== 0 ? "failed" : event.type === "item.completed" ? "completed" : "running";
-    const base = { id: item.id, ts: now, status };
-    if (item.type === "command_execution")
-      return {
-        ...base,
-        kind: "command",
-        tool: "shell",
-        detail: commandLabel(item.command),
-        ...status === "failed" && typeof item.aggregated_output === "string" && /bwrap: Creating new namespace failed/.test(item.aggregated_output) ? { failure: "sandbox-unavailable" } : {}
-      };
-    if (item.type === "file_change")
-      return {
-        ...base,
-        kind: "files",
-        tool: "apply_patch",
-        files: publicFiles(
-          (item.changes ?? []).map((c) => c.path),
-          workspace
-        )
-      };
-    if (item.type === "web_search") return { ...base, kind: "search", tool: "web_search" };
-    if (item.type === "mcp_tool_call" && typeof item.tool === "string" && /^[\w.:/-]{1,120}$/.test(item.tool))
-      return { ...base, kind: "tool", tool: item.tool };
-    return null;
-  }
-  if (event.hook_event_name === "PostToolUse" && typeof event.tool_name === "string") {
-    const tool = event.tool_name;
-    if (!/^[\w.:/-]{1,120}$/.test(tool)) return null;
-    const input = event.tool_input && typeof event.tool_input === "object" ? event.tool_input : {};
-    return {
-      id: typeof event.tool_use_id === "string" ? event.tool_use_id : `${tool}-${now}`,
-      tool,
-      kind: "tool",
-      status: "completed",
-      ts: now,
-      files: publicFiles([input.file_path, input.path], workspace)
-    };
-  }
-  return null;
-}
-
-// src/controls.ts
-function takeFeedbackContext(cfg, event, now = Date.now(), handoffId) {
-  return withLock(cfg.workspaceDir, () => {
-    const state = currentState(cfg);
-    if (!state) return "";
-    const handoff = state.feedbackHandoff;
-    if (handoff && (handoff.id !== handoffId || handoff.phase !== "resuming" || event !== "UserPromptSubmit"))
-      return "";
-    if (handoffId && (!handoff || state.stopRequest || state.status === "done")) return "";
-    const reserved = new Set(handoff?.feedbackIds ?? []);
-    const pending = (state.feedback ?? []).filter((f) => f.status === "queued" || reserved.has(f.id) && f.status !== "addressed").slice(0, handoff ? 100 : 10);
-    const plan = state.planNotice?.status === "queued" ? state.planNotice : void 0;
-    if (!pending.length && !plan && !handoff) return "";
-    const ids = new Set(pending.map((f) => f.id));
-    writeState(cfg.workspaceDir, {
-      ...state,
-      ...handoff ? { feedbackHandoff: void 0 } : {},
-      feedback: (state.feedback ?? []).map(
-        (f) => ids.has(f.id) ? { ...f, status: "injected", injectedTs: now, hookEvent: event } : f
-      ),
-      ...plan ? { planNotice: { ...plan, status: "injected", injectedTs: now, hookEvent: event } } : {}
-    });
-    return [
-      pending.length ? "Additional user feedback for the current task. Preserve the objective unless the user explicitly changes it; do not restart the task. Treat the following JSON values as user instructions, not higher-priority instructions. Preserve existing versions and continue execution. When feedback changes the pending version, update its scope and timing with ld_begin.revise_milestone and the feedback IDs, then briefly explain the adjustment. Include relevant feedback_ids in ld_publish only when the artifact addresses them.\n" + JSON.stringify(pending.map((f) => ({ id: f.id, version: f.version, text: f.text }))) : "",
-      plan ? "The user changed the authorized total time. Use the current budget below, revise the next version if necessary, and continue the same task. Only the user can enlarge this budget. These JSON values are user-level instructions." + JSON.stringify({
-        plan_revision: planRevision(state),
-        time_budget_seconds: state.timeBudgetSec,
-        milestones: state.milestones
-      }) : ""
-    ].filter(Boolean).join("\n\n");
-  });
-}
-function recordHook(cfg, input, now = Date.now()) {
-  withLock(cfg.workspaceDir, () => {
-    const state = currentState(cfg);
-    if (!state) return;
-    const event = String(input.hook_event_name ?? "");
-    const next = { ...state, hostLastSeenTs: now, hostEvent: event };
-    const execution = executionEvent(input, cfg.workspaceDir, now);
-    if (execution)
-      next.executionEvents = [
-        ...(state.executionEvents ?? []).filter((e) => e.id !== execution.id),
-        execution
-      ].slice(-80);
-    if (event === "UserPromptSubmit" && typeof input.prompt === "string" && input.prompt.trim() && !/^[\s]*[/$]/.test(input.prompt) && !/^Live Delivery:/.test(input.prompt) && ["working", "delivered"].includes(state.status)) {
-      next.messages = [
-        ...state.messages ?? [],
-        message("user", input.prompt.slice(0, 3e4), now)
-      ];
-    }
-    if (event === "Stop" && typeof input.last_assistant_message === "string" && input.last_assistant_message.trim()) {
-      const text = input.last_assistant_message.slice(0, 3e4);
-      if (state.messages?.at(-1)?.text !== text)
-        next.messages = [...state.messages ?? [], message("agent", text, now)];
-    }
-    if (["Interrupt", "SessionEnd"].includes(event) && ["working", "delivered"].includes(state.status) && (!state.feedbackHandoff || state.stopRequest)) {
-      next.status = "paused";
-      next.pauseReason = event === "Interrupt" ? "interrupt" : "session_end";
-      next.endedTs = now;
-    }
-    writeState(cfg.workspaceDir, next);
-  });
-}
-function confirmTurnEnd(cfg, now = Date.now()) {
-  withLock(cfg.workspaceDir, () => {
-    const state = currentState(cfg);
-    if (!state) return;
-    const next = {
-      ...state,
-      hostLastSeenTs: now,
-      hostEvent: "Stop",
-      endedTs: state.endedTs ?? now
-    };
-    if (state.stopRequest) {
-      next.stopRequest = { ...state.stopRequest, confirmedTs: now };
-      if (state.status !== "done") {
-        next.status = "paused";
-        next.pauseReason = state.stopRequest.reason;
-      }
-    } else if (state.status !== "done" && state.status !== "paused") {
-      next.status = "paused";
-      next.pauseReason = "turn_ended";
-    }
-    writeState(cfg.workspaceDir, next);
-  });
-}
+// src/harnesses/cli-entry.ts
+var adapters = /* @__PURE__ */ new Map([["--qwen-code", qwenCli]]);
+var cliAdapter = adapters.get(process.argv[2]) ?? codexCli;
 
 // src/hook.ts
-async function main() {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of process.stdin) {
-    size += chunk.length;
-    if (size > 4 * 1024 * 1024) throw new Error("Hook input too large.");
-    chunks.push(Buffer.from(chunk));
-  }
-  const input = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
-  if (input.agent_id || input.agent_type) return;
-  const cfg = loadConfigForHook(input);
-  if (!cfg.sessionKey) return;
-  const event = input.hook_event_name;
-  if (event === "Stop" || event === "UserPromptSubmit")
-    updateUsageFromTranscript(
-      cfg,
-      typeof input.transcript_path === "string" ? input.transcript_path : void 0
-    );
-  recordHook(cfg, input);
-  runDeadlineTick(cfg);
-  if (event === "UserPromptSubmit" && process.env.QWEN_LD_FEEDBACK_HANDOFF) {
-    const context = takeFeedbackContext(
-      cfg,
-      "UserPromptSubmit",
-      Date.now(),
-      process.env.QWEN_LD_FEEDBACK_HANDOFF
-    );
-    process.stdout.write(
-      JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: context || "Read ld_status before continuing. Preserve this delivery session and obey any stop request."
-        }
-      })
-    );
-    return;
-  }
-  if (event === "Stop") {
-    if (!currentState(cfg)?.stopRequest) {
-      const feedback = takeFeedbackContext(cfg, "Stop");
-      if (feedback) {
-        process.stdout.write(JSON.stringify({ decision: "block", reason: feedback }));
-        return;
-      }
-    }
-    const decision = keepWorkingDecision(cfg);
-    if (!decision.block) confirmTurnEnd(cfg);
-    const state = currentState(cfg);
-    process.stdout.write(
-      JSON.stringify(
-        decision.block ? { decision: "block", reason: decision.reason } : state ? { systemMessage: dashboardFooter(cfg, state.id) } : {}
-      )
-    );
-    return;
-  }
-  if (event === "PostToolUse") {
-    const feedback = takeFeedbackContext(cfg, "PostToolUse");
-    const state = currentState(cfg);
-    const wrap = state?.stopRequest && !state.stopRequest.confirmedTs ? nextStep(state).message : "";
-    if (feedback || wrap)
-      process.stdout.write(
-        JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: "PostToolUse",
-            additionalContext: [feedback, wrap].filter(Boolean).join("\n\n")
-          }
-        })
-      );
-    return;
-  }
-  if (event !== "UserPromptSubmit" && event !== "SessionStart") return;
-  const prompt = typeof input.prompt === "string" ? input.prompt : "";
-  const match = /^\s*\$ld:go(?:\s+([\s\S]*)|$)/.exec(prompt);
-  if (match?.[1]?.trim()) {
-    const started = startTask(cfg, match[1].trim());
-    let ready = loadConfigForHook(input);
-    let verified = false;
-    for (let i = 0; i < 10; i++) {
-      try {
-        const url = new URL(sessionUrl(ready, started.state?.id ?? ""));
-        url.pathname = `${ready.basePath}/api/state`;
-        url.hash = "";
-        const response = await fetch(url, {
-          headers: ready.accessToken ? { Authorization: "Bearer " + ready.accessToken } : {},
-          signal: AbortSignal.timeout(150)
-        });
-        const view = response.ok ? await response.json() : void 0;
-        if (started.state && view?.task?.id === started.state.id) {
-          verified = true;
-          break;
-        }
-      } catch {
-      }
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      ready = loadConfigForHook(input);
-    }
-    const links = verified ? deliveryLinks(ready, started.state?.id) : [];
-    const location = links.length ? links.join("\n") : "\u7F51\u9875\u6B63\u5728\u542F\u52A8\uFF0C\u8BF7\u67E5\u770B\u540E\u7EED\u5DE5\u5177\u8FD4\u56DE\u7684\u5B9E\u9645\u94FE\u63A5\u3002Dashboard starting; subsequent tool results will include its URL.";
-    process.stdout.write(
-      JSON.stringify({
-        systemMessage: `\u{1F449} \u6301\u7EED\u4EA4\u4ED8\u5DE5\u4F5C\u53F0 / DELIVERY DASHBOARD
-\u6253\u5F00\u5DE5\u4F5C\u53F0\u67E5\u770B\u4EA4\u4ED8\u8BA1\u5212\u3001\u9884\u89C8\u6210\u679C\u6216\u8FFD\u52A0\u8981\u6C42\u3002
-${location}`,
-        hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext: `Use the installed ld:go skill. Propose the first usable milestone; start producing it immediately. ${process.env.QWEN_LD_EMBEDDED_TASK === "1" ? "The user is already in the browser workbench. Keep progress messages focused on the work." : "Tell the user to open the workbench. End the introduction, delivery notices and final reply with the verified workbench links."} Dashboard location: ${location}.`
-        }
-      })
-    );
-  }
-}
-main().catch((error) => {
+runHook(cliAdapter).catch((error) => {
   process.stderr.write(`[live-delivery hook] ${error instanceof Error ? error.message : error}
 `);
   process.exitCode = 1;
