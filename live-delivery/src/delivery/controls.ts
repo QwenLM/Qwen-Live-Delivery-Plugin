@@ -1,18 +1,18 @@
 import { randomUUID } from 'node:crypto';
-import { executionEvent } from './activity.js';
-import type { CdConfig } from './config.js';
+import type { HostEvent } from './events.js';
+import type { DeliveryScope } from './context.js';
 import { currentState } from './core.js';
 import { withLock } from './lock.js';
 import { readState, writeState } from './state.js';
 import { message, planRevision, syncPlanDeadline } from './timeline.js';
 import type { CdFeedback, CdReleaseState } from './types.js';
 
-function active(cfg: CdConfig, id: string): CdReleaseState {
+function active(cfg: DeliveryScope, id: string): CdReleaseState {
   const state = currentState(cfg);
   if (!state || state.id !== id) throw new Error('Task is not active in this CLI session.');
   return state;
 }
-function hasPublishedVersion(cfg: CdConfig, state: CdReleaseState, version: number): boolean {
+function hasPublishedVersion(cfg: DeliveryScope, state: CdReleaseState, version: number): boolean {
   const seen = new Set<string>();
   let current: CdReleaseState | null = state;
   while (current && !seen.has(current.id)) {
@@ -24,7 +24,7 @@ function hasPublishedVersion(cfg: CdConfig, state: CdReleaseState, version: numb
   }
   return false;
 }
-export function reportActivity(cfg: CdConfig, text: string, now = Date.now()): CdReleaseState {
+export function reportActivity(cfg: DeliveryScope, text: string, now = Date.now()): CdReleaseState {
   return withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (!state) throw new Error('No active Live Delivery session.');
@@ -40,7 +40,7 @@ export function reportActivity(cfg: CdConfig, text: string, now = Date.now()): C
   });
 }
 export function queueFeedback(
-  cfg: CdConfig,
+  cfg: DeliveryScope,
   id: string,
   input: {
     id: string;
@@ -87,7 +87,7 @@ export function queueFeedback(
   });
 }
 export function requestWrapUp(
-  cfg: CdConfig,
+  cfg: DeliveryScope,
   id: string,
   reason: 'user' | 'budget' = 'user',
   now = Date.now(),
@@ -104,7 +104,7 @@ export function requestWrapUp(
   });
 }
 export function changeSettings(
-  cfg: CdConfig,
+  cfg: DeliveryScope,
   id: string,
   input: { timeBudgetSec: number; revision: number },
   now = Date.now(),
@@ -154,7 +154,7 @@ export function changeSettings(
 
 /** The receipt means emitted hook context, not that the model satisfied the request. */
 export function takeFeedbackContext(
-  cfg: CdConfig,
+  cfg: DeliveryScope,
   event: string,
   now = Date.now(),
   handoffId?: string,
@@ -206,53 +206,38 @@ export function takeFeedbackContext(
       .join('\n\n');
   });
 }
-export function recordHook(cfg: CdConfig, input: Record<string, unknown>, now = Date.now()): void {
+export function recordHostEvent(cfg: DeliveryScope, event: HostEvent, now = Date.now()): void {
   withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (!state) return;
-    const event = String(input.hook_event_name ?? '');
-    const next: CdReleaseState = { ...state, hostLastSeenTs: now, hostEvent: event };
-    const execution = executionEvent(input, cfg.workspaceDir, now);
+    const next: CdReleaseState = { ...state, hostLastSeenTs: now, hostEvent: event.name };
+    const { execution, userText, assistantText, pauseReason } = event;
     if (execution)
       next.executionEvents = [
         ...(state.executionEvents ?? []).filter((e) => e.id !== execution.id),
         execution,
       ].slice(-80);
-    if (
-      event === 'UserPromptSubmit' &&
-      typeof input.prompt === 'string' &&
-      input.prompt.trim() &&
-      !/^[\s]*[/$]/.test(input.prompt) &&
-      !/^Live Delivery:/.test(input.prompt) &&
-      ['working', 'delivered'].includes(state.status)
-    ) {
-      next.messages = [
-        ...(state.messages ?? []),
-        message('user', input.prompt.slice(0, 30000), now),
-      ];
+    if (userText && ['working', 'delivered'].includes(state.status)) {
+      next.messages = [...(state.messages ?? []), message('user', userText.slice(0, 30000), now)];
     }
-    if (
-      event === 'Stop' &&
-      typeof input.last_assistant_message === 'string' &&
-      input.last_assistant_message.trim()
-    ) {
-      const text = input.last_assistant_message.slice(0, 30000);
+    if (assistantText) {
+      const text = assistantText.slice(0, 30000);
       if (state.messages?.at(-1)?.text !== text)
         next.messages = [...(state.messages ?? []), message('agent', text, now)];
     }
     if (
-      ['Interrupt', 'SessionEnd'].includes(event) &&
+      pauseReason &&
       ['working', 'delivered'].includes(state.status) &&
       (!state.feedbackHandoff || state.stopRequest)
     ) {
       next.status = 'paused';
-      next.pauseReason = event === 'Interrupt' ? 'interrupt' : 'session_end';
+      next.pauseReason = pauseReason;
       next.endedTs = now;
     }
     writeState(cfg.workspaceDir, next);
   });
 }
-export function confirmTurnEnd(cfg: CdConfig, now = Date.now()): void {
+export function confirmTurnEnd(cfg: DeliveryScope, now = Date.now()): void {
   withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (!state) return;

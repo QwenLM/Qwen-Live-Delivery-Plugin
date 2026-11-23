@@ -2,8 +2,9 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { createDeliveryServer } from './http.js';
-import { readState } from './state.js';
-import { DEFAULT_BASE_PATH, sessionUrl, type CdConfig } from './config.js';
+import { readState } from '../delivery/state.js';
+import { DEFAULT_BASE_PATH, type CdConfig } from './config.js';
+import { sessionUrl } from './browser.js';
 
 const { values } = parseArgs({
   options: {
@@ -25,9 +26,8 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invali
 if (!['127.0.0.1', '0.0.0.0'].includes(values.host!))
   throw new Error('Use a loopback address or explicit 0.0.0.0 for sharing.');
 const cfg: CdConfig = {
-  harness: 'codex',
+  harness: state.harness ?? 'codex',
   workspaceDir,
-  instance: 'read-only-viewer',
   sessionKey: state.sessionKey,
   port,
   basePath: DEFAULT_BASE_PATH,

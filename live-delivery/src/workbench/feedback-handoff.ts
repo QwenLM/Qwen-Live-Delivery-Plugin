@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import type { CdConfig } from './config.js';
-import { currentState } from './core.js';
-import { withLock } from './lock.js';
-import { writeState } from './state.js';
+import type { DeliveryScope } from '../delivery/context.js';
+import { currentState } from '../delivery/core.js';
+import { withLock } from '../delivery/lock.js';
+import { writeState } from '../delivery/state.js';
 
 /** Reserve queued messages before asking the owned native process to stop. */
-export function beginFeedbackHandoff(cfg: CdConfig, threadId: string, now = Date.now()) {
+export function beginFeedbackHandoff(cfg: DeliveryScope, threadId: string, now = Date.now()) {
   return withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (!state || state.stopRequest || state.status === 'done') return;
@@ -27,7 +27,7 @@ export function beginFeedbackHandoff(cfg: CdConfig, threadId: string, now = Date
 }
 
 /** Called only after the old process has exited; never resets versions or the budget. */
-export function prepareFeedbackResume(cfg: CdConfig, id: string) {
+export function prepareFeedbackResume(cfg: DeliveryScope, id: string) {
   return withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg),
       handoff = state?.feedbackHandoff;
@@ -43,7 +43,7 @@ export function prepareFeedbackResume(cfg: CdConfig, id: string) {
   });
 }
 
-export function cancelFeedbackHandoff(cfg: CdConfig, id: string) {
+export function cancelFeedbackHandoff(cfg: DeliveryScope, id: string) {
   withLock(cfg.workspaceDir, () => {
     const state = currentState(cfg);
     if (state?.feedbackHandoff?.id === id)

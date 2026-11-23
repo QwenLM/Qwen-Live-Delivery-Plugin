@@ -1,10 +1,10 @@
 import { currentState } from './core.js';
 import { isBudgetExhausted, meetsWorkFloor, workFloorSummary } from './engine.js';
-import type { CdConfig } from './config.js';
+import type { DeliveryContext } from './context.js';
 import { nextStep } from './instructions.js';
 
 export function keepWorkingDecision(
-  cfg: CdConfig,
+  cfg: DeliveryContext,
   now = Date.now(),
 ): { block: boolean; reason?: string } {
   const state = currentState(cfg);

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WorkbenchHost } from '../.test-build/workbench-host.js';
+import { createCodexWorkbench } from '../.test-build/dashboard.js';
 import { loadRegistry } from '../.test-build/registry.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -35,7 +35,7 @@ test('invalid registry contents survive failed host startup byte for byte', (t) 
   ]) {
     fs.writeFileSync(file, original);
     assert.throws(
-      () => new WorkbenchHost({ stateDir: temp, workspaceRoot, pluginRoot: root }),
+      () => createCodexWorkbench({ stateDir: temp, workspaceRoot, pluginRoot: root }),
       /Invalid task registry.*original file is preserved/,
     );
     assert.equal(fs.readFileSync(file, 'utf8'), original);

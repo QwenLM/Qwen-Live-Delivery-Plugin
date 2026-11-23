@@ -2,10 +2,18 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { networkInterfaces } from 'node:os';
-import { atomicJson, type CdConfig } from './config.js';
-import { currentState } from './core.js';
+import { atomicJson } from '../shared/json.js';
+import type { CdConfig } from './config.js';
+import { currentState } from '../delivery/core.js';
 import { accessLink } from './access.js';
-import { cdRootDir } from './state.js';
+import { cdRootDir } from '../delivery/state.js';
+
+export function sessionUrl(cfg: CdConfig, id: string): string {
+  return accessLink(
+    `http://127.0.0.1:${cfg.port}${cfg.basePath}/?s=${encodeURIComponent(id)}`,
+    cfg.accessToken,
+  );
+}
 
 export function deliveryLinks(
   cfg: Pick<CdConfig, 'port' | 'basePath' | 'bindHost' | 'accessToken' | 'dashboardFile'>,

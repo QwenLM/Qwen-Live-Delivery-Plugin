@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { configurePluginHooks } from './hook-trust.js';
-import { requireSupportedPlatform } from './process.js';
+import { requireSupportedPlatform } from '../../shared/process.js';
 import { sandboxWarnings } from './setup-diagnostics.js';
 import { configuredProviderEnv, configureProviderEnv } from './provider-env.js';
 import { stagePlugin } from './plugin-package.js';

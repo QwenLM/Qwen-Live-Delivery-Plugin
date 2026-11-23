@@ -5,7 +5,7 @@ var __export = (target, all) => {
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
-// src/setup.ts
+// src/harnesses/codex/setup.ts
 import { parseArgs } from "node:util";
 import { spawnSync, spawn as spawn2 } from "node:child_process";
 import { mkdirSync as mkdirSync2, readFileSync as readFileSync4, existsSync, realpathSync } from "node:fs";
@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import path4 from "node:path";
 import { createInterface as createInterface2 } from "node:readline/promises";
 
-// src/hook-trust.ts
+// src/harnesses/codex/hook-trust.ts
 import { readFileSync as readFileSync2 } from "node:fs";
 import { createHash } from "node:crypto";
 import path2 from "node:path";
@@ -19737,7 +19737,7 @@ function date4(params) {
   return _coercedDate(ZodDate, params);
 }
 
-// src/native-rpc.ts
+// src/harnesses/codex/native-rpc.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 var NativeRpc = class {
@@ -19814,7 +19814,7 @@ var NativeRpc = class {
   }
 };
 
-// src/provider-env.ts
+// src/harnesses/codex/provider-env.ts
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 var record2 = (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -19860,7 +19860,7 @@ function configureProviderEnv(pluginRoot, names) {
   writeFileSync(file2, JSON.stringify(manifest, null, 2) + "\n", { mode: 384 });
 }
 
-// src/hook-trust.ts
+// src/harnesses/codex/hook-trust.ts
 var configResponse = external_exports.object({
   config: external_exports.object({
     features: external_exports.object({ hooks: external_exports.boolean().optional(), codex_hooks: external_exports.boolean().optional() }).optional()
@@ -19946,13 +19946,13 @@ async function configurePluginHooks(root2, workspace, env, bin2, options = {}) {
   }
 }
 
-// src/process.ts
+// src/shared/process.ts
 function requireSupportedPlatform(platform = process.platform) {
   if (platform !== "linux" && platform !== "darwin")
     throw new Error("This plugin supports macOS and Linux. Native Windows is not supported.");
 }
 
-// src/setup-diagnostics.ts
+// src/harnesses/codex/setup-diagnostics.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 function sandboxWarnings({
   env = process.env,
@@ -19980,7 +19980,7 @@ function sandboxWarnings({
   return [];
 }
 
-// src/plugin-package.ts
+// src/harnesses/codex/plugin-package.ts
 import { cpSync, mkdirSync, writeFileSync as writeFileSync2 } from "node:fs";
 import path3 from "node:path";
 function stagePlugin(source, destination) {
@@ -20009,7 +20009,7 @@ function stagePlugin(source, destination) {
   );
 }
 
-// src/setup.ts
+// src/harnesses/codex/setup.ts
 var { values } = parseArgs({
   options: {
     yes: { type: "boolean" },

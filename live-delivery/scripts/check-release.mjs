@@ -9,6 +9,7 @@ export const root = path.dirname(pluginRoot);
 export const pluginFiles = new Set([
   '.codex-plugin/plugin.json',
   '.mcp.json',
+  'qwen-extension.json',
   'hooks/hooks.json',
   'skills/go/SKILL.md',
   'skills/install/SKILL.md',
@@ -61,6 +62,8 @@ export function checkFileList(files) {
 const excluded = new Set([
   'node_modules',
   '.test-build',
+  '.live-delivery',
+  '.qwen',
   '.git',
   'artifacts',
   'release',
@@ -107,6 +110,7 @@ export function checkRelease() {
     manifest = json('.codex-plugin/plugin.json'),
     lock = json('package-lock.json');
   assert.equal(pkg.version, manifest.version);
+  assert.equal(pkg.version, json('qwen-extension.json').version);
   assert.equal(pkg.version, lock.version);
   assert.equal(pkg.version, lock.packages[''].version);
   assert.equal(pkg.name, lock.name);
@@ -138,8 +142,8 @@ export function checkRelease() {
     );
   }
   for (const file of [
-    'live-delivery/src/core.ts',
-    'live-delivery/src/server.ts',
+    'live-delivery/src/delivery/core.ts',
+    'live-delivery/src/integration/server.ts',
     'README.md',
     'README.zh-CN.md',
   ]) {

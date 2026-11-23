@@ -14,6 +14,7 @@ import { changeSettings, requestWrapUp } from '../.test-build/controls.js';
 import { buildReadModel } from '../.test-build/read-model.js';
 import { keepWorkingDecision } from '../.test-build/policy.js';
 import { loadConfig } from '../.test-build/config.js';
+import { codexCli } from '../.test-build/cli.js';
 import { requestedBudget } from '../.test-build/budget.js';
 const epoch = 1000000;
 const milestone = (id, target = '1m') => ({
@@ -200,11 +201,11 @@ test('default configuration starts rolling delivery without fabricating user app
   const previous = process.env.QWEN_LD_REQUIRE_PLAN_APPROVAL;
   try {
     delete process.env.QWEN_LD_REQUIRE_PLAN_APPROVAL;
-    assert.equal(loadConfig(cfg.workspaceDir).requirePlanApproval, false);
+    assert.equal(loadConfig(codexCli, cfg.workspaceDir).requirePlanApproval, false);
     process.env.QWEN_LD_REQUIRE_PLAN_APPROVAL = '1';
-    assert.equal(loadConfig(cfg.workspaceDir).requirePlanApproval, false);
+    assert.equal(loadConfig(codexCli, cfg.workspaceDir).requirePlanApproval, false);
     process.env.QWEN_LD_REQUIRE_PLAN_APPROVAL = '0';
-    cfg.requirePlanApproval = loadConfig(cfg.workspaceDir).requirePlanApproval;
+    cfg.requirePlanApproval = loadConfig(codexCli, cfg.workspaceDir).requirePlanApproval;
   } finally {
     if (previous === undefined) delete process.env.QWEN_LD_REQUIRE_PLAN_APPROVAL;
     else process.env.QWEN_LD_REQUIRE_PLAN_APPROVAL = previous;

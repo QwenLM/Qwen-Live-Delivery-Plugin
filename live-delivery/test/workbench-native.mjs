@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { parse } from 'smol-toml';
-import { WorkbenchHost } from '../.test-build/workbench-host.js';
+import { createCodexWorkbench } from '../.test-build/dashboard.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'cd-web-native-'));
@@ -272,7 +272,7 @@ fs.writeFileSync(
   path.join(home, 'config.toml'),
   `model="fixture-model"\nmodel_provider="fixture"\n[model_providers.fixture]\nname="Local fixture"\nbase_url="http://127.0.0.1:${model.address().port}/v1"\nwire_api="responses"\nrequires_openai_auth=false\nrequest_max_retries=0\nstream_max_retries=0\n${interruptFeedback ? 'env_key="fixture_lowercase_key"\n' : ''}`,
 );
-let host = new WorkbenchHost(
+let host = createCodexWorkbench(
   {
     planMode: rolling ? 'rolling' : 'fixed',
     stateDir: path.join(temp, 'private'),
@@ -349,7 +349,7 @@ try {
     const port = host.server.address().port,
       options = host.options;
     await host.close();
-    host = new WorkbenchHost(options, {
+    host = createCodexWorkbench(options, {
       PATH: process.env.PATH,
       HOME: os.homedir(),
       fixture_lowercase_key: fixtureKey,

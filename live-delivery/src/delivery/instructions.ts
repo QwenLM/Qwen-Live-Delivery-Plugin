@@ -35,9 +35,3 @@ export function nextStep(state: CdReleaseState, now = Date.now()) {
       'The fixed plan is delivered. Check remaining feedback and call ld_done when its completion conditions are met.',
   };
 }
-
-export const BROWSER_TASK_INSTRUCTIONS =
-  'Execute the user task in the selected workspace using the installed ld:go skill. Do not read or disclose credential files, secret environment values, or unrelated private configuration. You may read the installed skill and its bundled resources, and inspect non-sensitive environment information needed for the task. Use plugin tools to change delivery state; do not edit .live-delivery or workbench state directly. Do not spawn subagents. This task was started in the browser: keep progress messages focused on the work; the workbench already provides navigation.';
-
-export const FEEDBACK_RESUME_INSTRUCTIONS =
-  'Live Delivery: receive the new user feedback provided with this turn, update the pending version when needed, and continue the same task from its current files. Check any interrupted tool results before relying on them. Preserve published versions and the existing total time budget.';
