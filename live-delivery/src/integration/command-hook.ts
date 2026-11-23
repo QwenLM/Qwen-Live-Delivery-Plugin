@@ -1,9 +1,13 @@
 import type { CliHookEvent, HookResponse } from './cli-adapter.js';
 import { hookExecutionEvent } from './hook-activity.js';
 
+/** `$ld:go <task>`: the skill invocation shared by Codex and Qwen Code. */
+export const SKILL_TASK_COMMAND = /^\s*\$ld:go(?:\s+([\s\S]*)|$)/;
+
 export function normalizeCommandHook(
   input: Record<string, unknown>,
   now: number,
+  taskCommand: RegExp = SKILL_TASK_COMMAND,
 ): CliHookEvent | null {
   if (
     input.agent_id ||
@@ -26,9 +30,7 @@ export function normalizeCommandHook(
   const workspace = typeof input.cwd === 'string' ? input.cwd : process.env.CLAUDE_PROJECT_DIR;
   const prompt = typeof input.prompt === 'string' ? input.prompt : '';
   const task =
-    phase === 'prompt' || phase === 'session'
-      ? /^\s*\$ld:go(?:\s+([\s\S]*)|$)/.exec(prompt)?.[1]?.trim()
-      : undefined;
+    phase === 'prompt' || phase === 'session' ? taskCommand.exec(prompt)?.[1]?.trim() : undefined;
   return {
     name,
     phase,

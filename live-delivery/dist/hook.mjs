@@ -880,14 +880,15 @@ function hookExecutionEvent(event, workspace, now) {
 }
 
 // src/integration/command-hook.ts
-function normalizeCommandHook(input, now) {
+var SKILL_TASK_COMMAND = /^\s*\$ld:go(?:\s+([\s\S]*)|$)/;
+function normalizeCommandHook(input, now, taskCommand = SKILL_TASK_COMMAND) {
   if (input.agent_id || input.agent_type || typeof input.session_id !== "string" || !input.session_id)
     return null;
   const name = String(input.hook_event_name ?? "");
   const phase = name === "SessionStart" ? "session" : name === "UserPromptSubmit" ? "prompt" : name === "PostToolUse" ? "tool-completed" : name === "Stop" ? "turn-end" : "other";
   const workspace = typeof input.cwd === "string" ? input.cwd : process.env.CLAUDE_PROJECT_DIR;
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
-  const task = phase === "prompt" || phase === "session" ? /^\s*\$ld:go(?:\s+([\s\S]*)|$)/.exec(prompt)?.[1]?.trim() : void 0;
+  const task = phase === "prompt" || phase === "session" ? taskCommand.exec(prompt)?.[1]?.trim() : void 0;
   return {
     name,
     phase,
@@ -948,6 +949,54 @@ function findCliInstance(matches) {
   }
   return void 0;
 }
+
+// src/harnesses/claude-code/usage.ts
+var decodeClaudeUsage = (record) => {
+  const usage = record.type === "assistant" && record.message?.usage;
+  const id = record.message?.id;
+  if (!usage || !id) return;
+  return {
+    kind: "message",
+    id,
+    counts: {
+      input: usage.input_tokens ?? 0,
+      output: usage.output_tokens ?? 0,
+      cacheRead: usage.cache_read_input_tokens ?? 0,
+      cacheCreate: usage.cache_creation_input_tokens ?? 0
+    }
+  };
+};
+
+// src/harnesses/claude-code/cli.ts
+var CLAUDE_TASK_COMMAND = /^\s*\/ld:go(?:\s+([\s\S]*)|$)/;
+function isClaudeCli(name, pid) {
+  if (name === "claude") return true;
+  return name === "node" && /^(?:.*\/)?node\s+(?:[^\s]*\/)?(?:claude|@anthropic-ai\/claude-code\/cli\.js)(?:\s|$)/.test(
+    processArgs(pid)
+  );
+}
+var claudeCli = {
+  id: "claude-code",
+  defaultPort: 0,
+  loopbackOnly: true,
+  instance: () => {
+    const instance = process.env.QWEN_LD_INSTANCE_ID || findCliInstance(isClaudeCli);
+    if (!instance)
+      throw new Error(
+        "No Claude Code CLI process found. Start Live Delivery from a standalone claude CLI."
+      );
+    return instance;
+  },
+  explicitSessionKey: () => process.env.QWEN_LD_SESSION_KEY || void 0,
+  // SessionStart reports the active model; this only covers MCP-first startup.
+  model: () => process.env.ANTHROPIC_MODEL || "unknown",
+  normalizeHook: (input, now) => normalizeCommandHook(input, now, CLAUDE_TASK_COMMAND),
+  encodeHook: encodeCommandHook,
+  transcriptUsage: decodeClaudeUsage,
+  // Claude Code has no Interrupt event or resumable app server; queued feedback
+  // reaches the agent at prompt, tool and turn-end boundaries.
+  feedbackOnPrompt: true
+};
 
 // src/harnesses/codex/model.ts
 import { readFileSync as readFileSync6 } from "node:fs";
@@ -1780,7 +1829,10 @@ var qwenCli = {
 };
 
 // src/harnesses/cli-entry.ts
-var adapters = /* @__PURE__ */ new Map([["--qwen-code", qwenCli]]);
+var adapters = /* @__PURE__ */ new Map([
+  ["--qwen-code", qwenCli],
+  ["--claude-code", claudeCli]
+]);
 var cliAdapter = adapters.get(process.argv[2]) ?? codexCli;
 
 // src/hook.ts

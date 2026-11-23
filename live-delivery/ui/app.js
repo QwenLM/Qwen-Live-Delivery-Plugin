@@ -254,7 +254,7 @@
       bottom = feed.scrollHeight - feed.clientHeight - feed.scrollTop < 65,
       oldScroll = feed.scrollTop;
     if (composing || !data?.task) {
-      feed.innerHTML = `<div class="welcome"><strong>${t('先交付，再不断完善。')}</strong><p>${t(data?.workbench?.canCreateTask ? '描述你想完成的成果，Agent 会先交付可用首版，再逐版改进。' : '在 Codex 输入 $ld:go 和你的需求，这里会显示交付成果。')}</p></div>`;
+      feed.innerHTML = `<div class="welcome"><strong>${t('先交付，再不断完善。')}</strong><p>${t(data?.workbench?.canCreateTask ? '描述你想完成的成果，Agent 会先交付可用首版，再逐版改进。' : data?.harness === 'claude-code' ? '在 Claude Code 输入 /ld:go 和你的需求，这里会显示交付成果。' : '在 Codex 输入 $ld:go 和你的需求，这里会显示交付成果。')}</p></div>`;
       return;
     }
     const entries = [
