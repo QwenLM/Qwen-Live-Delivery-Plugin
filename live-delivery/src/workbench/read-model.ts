@@ -29,6 +29,7 @@ export function buildReadModel(
     return {
       apiVersion: 1,
       serverTime: now,
+      harness: cfg.harness,
       task: null,
       csrfToken,
       capabilities: { feedback: false, settings: false, wrapUp: false, readOnly: !!cfg.readOnly },
@@ -70,6 +71,7 @@ export function buildReadModel(
   return {
     apiVersion: 1,
     serverTime: now,
+    harness: cfg.harness,
     csrfToken,
     task: {
       id: state.id,

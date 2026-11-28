@@ -48,6 +48,8 @@
     发送: 'Send',
     '在 Codex 输入 $ld:go 和你的需求，这里会显示交付成果。':
       'Enter $ld:go and your request in Codex. Deliveries will appear here.',
+    '在 Claude Code 输入 /ld:go 和你的需求，这里会显示交付成果。':
+      'Enter /ld:go and your request in Claude Code. Deliveries will appear here.',
     在这里描述需求: 'Describe your task here',
     天: 'days',
     实际: 'Actual',

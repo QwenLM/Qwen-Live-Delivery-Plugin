@@ -73,6 +73,10 @@ From the repository root, run `qwen extensions link "$PWD/live-delivery"` and co
 
 The dashboard listens on loopback. Preview published versions and send feedback to the current session at the next tool boundary or CLI turn. It cannot launch Qwen from the browser, wake an idle process, or interrupt a running tool. For parallel tasks, start separate `qwen` processes without resuming the same conversation in both. Closing the CLI closes its dashboard.
 
+### Claude Code (CLI-started tasks only)
+
+Run `claude plugin marketplace add QwenLM/Qwen-Live-Delivery-Plugin` and `claude plugin install ld@qwen-live-delivery`. Start a new `claude` in your project, enter `/ld:go your task`, and open the dashboard link shown in the session. Like Qwen Code, the dashboard listens on loopback and cannot launch Claude Code from the browser. See the [Claude Code guide](docs/claude-code.md) for details and current limitations.
+
 ## Quick start
 
 Start Codex in your project:
@@ -104,6 +108,7 @@ Plugin **0.1.0**, tested with Codex **0.166.0 / 0.167.1**.
 
 ## Documentation
 
+- [Claude Code](docs/claude-code.md)
 - [Contributing](CONTRIBUTING.md) · [Development and tests](docs/development.md)
 - [Security](SECURITY.md)
 

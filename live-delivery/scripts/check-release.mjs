@@ -42,6 +42,19 @@ export const runtimeFiles = new Set([
   'docs/development.zh-CN.md',
 ]);
 
+// The Claude Code plugin installs from the repository marketplace
+// (.claude-plugin/marketplace.json), not from the Codex release archive.
+export const claudeCodeFiles = new Set([
+  '.claude-plugin/marketplace.json',
+  'live-delivery/claude-code/.claude-plugin/plugin.json',
+  'live-delivery/claude-code/.mcp.json',
+  'live-delivery/claude-code/hooks/hooks.json',
+  'live-delivery/claude-code/skills/go/SKILL.md',
+  'live-delivery/claude-code/dist/server.mjs',
+  'live-delivery/claude-code/dist/hook.mjs',
+  'live-delivery/claude-code/LICENSE',
+]);
+
 export function npm(args) {
   const result = spawnSync('npm', args, { cwd: pluginRoot, encoding: 'utf8' });
   if (result.status !== 0) throw new Error(result.stderr || `npm ${args[0]} failed`);
@@ -152,6 +165,34 @@ export function checkRelease() {
       `Version missing from ${file}`,
     );
   }
+  for (const file of claudeCodeFiles)
+    assert.ok(lstatSync(path.join(root, file)).isFile(), `Missing Claude Code file: ${file}`);
+  const claudeManifest = json('claude-code/.claude-plugin/plugin.json');
+  assert.equal(claudeManifest.name, manifest.name);
+  assert.equal(claudeManifest.version, pkg.version);
+  assert.equal(claudeManifest.license, pkg.license);
+  const claudeMarketplace = json('../.claude-plugin/marketplace.json');
+  assert.equal(claudeMarketplace.plugins[0].name, manifest.name);
+  assert.equal(claudeMarketplace.plugins[0].source, './live-delivery/claude-code');
+  assert.equal(claudeMarketplace.plugins[0].version, pkg.version);
+  assert.equal(readFileSync(path.join(pluginRoot, 'claude-code/LICENSE'), 'utf8'), license);
+  for (const entry of ['server', 'hook'])
+    assert.equal(
+      readFileSync(path.join(pluginRoot, 'claude-code/dist', `${entry}.mjs`), 'utf8'),
+      readFileSync(path.join(pluginRoot, 'dist', `${entry}.mjs`), 'utf8'),
+      `Stale Claude Code runtime: claude-code/dist/${entry}.mjs; run npm run build`,
+    );
+  assert.equal(
+    readFileSync(path.join(pluginRoot, 'claude-code/skills/go/SKILL.md'), 'utf8'),
+    readFileSync(path.join(pluginRoot, 'skills/go/SKILL.md'), 'utf8'),
+  );
+  const claudeMcp = json('claude-code/.mcp.json').mcpServers['live-delivery'];
+  assert.deepEqual(claudeMcp.args, ['${CLAUDE_PLUGIN_ROOT}/dist/server.mjs', '--claude-code']);
+  assert.ok(!claudeMcp.env, 'Do not embed environment values in the release manifest');
+  for (const groups of Object.values(json('claude-code/hooks/hooks.json').hooks))
+    for (const group of groups)
+      for (const hook of group.hooks)
+        assert.equal(hook.command, 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs" --claude-code');
   const mcp = json('.mcp.json').mcpServers['live-delivery'];
   assert.equal(mcp.command, 'node');
   assert.deepEqual(mcp.args, ['dist/server.mjs']);

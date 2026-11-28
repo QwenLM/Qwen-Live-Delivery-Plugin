@@ -208,6 +208,11 @@ function serveVersionZip(cfg: CdConfig, res: ServerResponse, id: string, version
 /**
  * Build the HTTP server for a config. Call .listen() separately.
  */
+const HARNESS_NAMES: Record<string, string> = {
+  'claude-code': 'Claude Code',
+  'qwen-code': 'Qwen Code',
+};
+
 export function createDeliveryServer(
   initial: CdConfig,
   options: {
@@ -302,7 +307,7 @@ export function createDeliveryServer(
           409,
           JSON.stringify({
             ok: false,
-            error: 'Read-only viewer; launch the task from Codex to execute.',
+            error: `Read-only viewer; launch the task from ${HARNESS_NAMES[cfg.harness] ?? 'Codex'} to execute.`,
           }),
           'application/json',
         );

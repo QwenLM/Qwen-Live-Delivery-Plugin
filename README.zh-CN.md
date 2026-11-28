@@ -73,6 +73,10 @@ codex plugin marketplace remove live-delivery-local --json
 
 工作台只监听本机。可以预览已发布的版本和追加反馈；反馈在该会话的下一个工具边界或 CLI 回合送达，不会从网页启动 Qwen、唤醒空闲进程或强行中断正在运行的工具。并行任务请分别启动两个 `qwen` 进程，不要在两个进程中恢复同一个 Qwen 会话。关闭 CLI 后，对应工作台也会关闭。
 
+### Claude Code（仅从 CLI 发起）
+
+运行 `claude plugin marketplace add QwenLM/Qwen-Live-Delivery-Plugin` 和 `claude plugin install ld@qwen-live-delivery`。在项目中启动新的 `claude`，输入 `/ld:go 你的任务`，然后打开会话中显示的工作台链接。与 Qwen Code 相同，工作台只监听本机回环地址，不能从浏览器启动 Claude Code。详细说明和当前限制见 [Claude Code 指南](docs/claude-code.zh-CN.md)。
+
 ## 快速开始
 
 在项目目录启动 Codex：
@@ -104,6 +108,7 @@ $ld:go 制作一个离线可用的单摆实验网页，可以调节摆长、暂�
 
 ## 文档
 
+- [Claude Code](docs/claude-code.zh-CN.md)
 - [贡献指南（英文）](CONTRIBUTING.md) · [开发与测试](docs/development.zh-CN.md)
 - [安全说明（英文）](SECURITY.md)
 

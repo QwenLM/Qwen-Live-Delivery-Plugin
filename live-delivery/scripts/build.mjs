@@ -6,6 +6,7 @@ import {
   readdirSync,
   rmSync,
   copyFileSync,
+  mkdirSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -89,6 +90,19 @@ for (const [entry, source] of Object.entries(entries)) {
   appendFileSync(path.join(root, 'dist', `${entry}.mjs`), notices.comment);
   for (const id of notices.packages) bundledPackages.add(id);
 }
+// Claude Code installs a plugin directory on its own, so its root carries
+// copies of the shared runtime; `--claude-code` selects the adapter at run time.
+// The manifest, .mcp.json and hooks.json under claude-code/ are source files.
+const claudeRoot = path.join(root, 'claude-code');
+mkdirSync(path.join(claudeRoot, 'dist'), { recursive: true });
+mkdirSync(path.join(claudeRoot, 'skills/go'), { recursive: true });
+for (const entry of ['server', 'hook'])
+  copyFileSync(
+    path.join(root, 'dist', `${entry}.mjs`),
+    path.join(claudeRoot, 'dist', `${entry}.mjs`),
+  );
+copyFileSync(path.join(root, 'skills/go/SKILL.md'), path.join(claudeRoot, 'skills/go/SKILL.md'));
+copyFileSync(path.join(root, 'LICENSE'), path.join(claudeRoot, 'LICENSE'));
 console.log(`Embedded license notices for ${bundledPackages.size} bundled dependencies.`);
 rmSync(path.join(root, '.test-build'), { recursive: true, force: true });
 await build({
